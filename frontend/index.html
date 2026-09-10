@@ -778,6 +778,17 @@
       font-size: 12px;
     }
 
+    footer a.footer-link {
+      color: #8ab4f8;
+      text-decoration: none;
+      margin-bottom: 4px;
+      display: inline-block;
+    }
+
+    footer a.footer-link:hover {
+      text-decoration: underline;
+    }
+
     /* ========== MOBILE ========== */
     @media (max-width: 768px) {
       header { padding: 0 14px; height: 52px; }
@@ -926,7 +937,6 @@
     <div class="lightbox-box" id="faqLightboxBox">
       <button class="lightbox-close" id="faqLbClose">✕</button>
       <div class="lb-faq-header">
-        <div class="lb-category" id="lbCategory"></div>
         <div class="lb-question" id="lbQuestion"></div>
       </div>
       <div class="lb-faq-body">
@@ -966,6 +976,8 @@
 
   <!-- FOOTER -->
   <footer>
+    <a class="footer-link" href="https://www.toray-acs.co.jp/trademark/" target="_blank" rel="noopener noreferrer">商標・登録商標</a>
+    <br>
     Copyright © 2026 Toray Advanced Computer Solution, Inc.
   </footer>
 
@@ -1297,7 +1309,6 @@
       var card = document.createElement('div');
       card.className = 'faq-card';
       card.innerHTML =
-        '<div class="faq-category">' + esc(item.category || 'その他') + '</div>' +
         '<div class="faq-question">' + esc(item.question || '') + '</div>';
       card.addEventListener('click', function() { 
         openFaqLb(item); 
@@ -1396,7 +1407,6 @@
   // Lightbox - FAQ（Bug#2修正: stepsを番号付きリストで表示）
   // ================================================================
   function openFaqLb(item) {
-    document.getElementById('lbCategory').textContent = item.category || 'その他';
     document.getElementById('lbQuestion').textContent = item.question || '';
 
     // 回答の表示
