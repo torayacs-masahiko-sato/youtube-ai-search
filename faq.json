@@ -1,0 +1,193 @@
+{
+  "meta": {
+    "generated_at": "2026-02-25T01:56:09.712Z",
+    "version": "5.0 Claude AI統合版",
+    "count": 5
+  },
+  "faqs": [
+    {
+      "faq_id": "その他-001",
+      "category": "出力・印刷",
+      "question": "プロッタやプリンタへの出力ができない場合の対処方法は？",
+      "answer": "1. ネットワーク接続を確認してください。PCとプロッタ/プリンタが同じネットワークに接続されているか確認します\n2. Windowsのコマンドプロンプトを開き、「ping [プロッタのIPアドレス]」を実行して疎通確認を行います\n3. 名前解決が失敗している場合、ネットワーク管理者に連絡してDNS設定を確認してもらいます\n4. 出力機器のIPアドレスが正しく設定されているか、CADソフトウェアの出力設定画面で確認します\n5. ネットワークケーブルの物理的な接続を確認し、必要に応じて再接続します\n6. ルーターやスイッチングハブの電源を一度切り、再起動してネットワークをリフレッシュします\n7. それでも解決しない場合は、出力機器側のネットワーク設定も確認してください",
+      "answer_steps": [
+        "ネットワーク接続を確認してください。PCとプロッタ/プリンタが同じネットワークに接続されているか確認します",
+        "Windowsのコマンドプロンプトを開き、「ping [プロッタのIPアドレス]」を実行して疎通確認を行います",
+        "名前解決が失敗している場合、ネットワーク管理者に連絡してDNS設定を確認してもらいます",
+        "出力機器のIPアドレスが正しく設定されているか、CADソフトウェアの出力設定画面で確認します",
+        "ネットワークケーブルの物理的な接続を確認し、必要に応じて再接続します",
+        "ルーターやスイッチングハブの電源を一度切り、再起動してネットワークをリフレッシュします",
+        "それでも解決しない場合は、出力機器側のネットワーク設定も確認してください"
+      ],
+      "keywords": [
+        "出力",
+        "ネットワーク",
+        "名前解決",
+        "プロッタ",
+        "プリンタ",
+        "接続エラー"
+      ],
+      "tags": [
+        "出力",
+        "ネットワーク",
+        "名前解決",
+        "プロッタ",
+        "プリンタ",
+        "接続エラー"
+      ],
+      "note": "サポート担当者の回答によると、名前解決の問題が原因である可能性が高いため、ネットワーク環境の確認が最優先です",
+      "confidence": "high",
+      "support_based": true,
+      "manual_ref": "GRShortcutKeyInfoList.pdf, M1.pdf, PM-BASIC.pdf, PMShortcutKeyInfoList.pdf, PM-Trace.pdf, Short.pdf, training_GRII_Comparison_v9.pdf, training_PMII_ComparisonList_v9.pdf, AutoAdvanceStart.pdf, GRII基本操作.pdf, M0.pdf, S0.pdf, T1.pdf, Torso.pdf, T0.pdf, training_PMII_Comparison_v9.pdf, 3D-base.pdf, GRII_WEBトレ2nd.pdf, GRII_WEBトレーニング.pdf, D0.pdf, R0.pdf, PM-3Dmanual.pdf, PM-manual.pdf",
+      "generated_at": "2026-02-25T01:55:22.884Z"
+    },
+    {
+      "faq_id": "その他-002",
+      "category": "グレーディング",
+      "question": "グレーディング時に「背裏の裾線とCBがエラーになる」と表示される",
+      "answer": "1. エラーメッセージを確認し、CB（センターバック）のBNP（Base Notch Point）番号を特定する\n2. グレーディングルールで設定されているCB(BNP)の番号を確認する（例：9007 11 300）\n3. パターン上で実際に存在するBNP番号を確認する\n4. 設定されているBNP番号（この例では「300」）がパターン内に存在しない場合、パターン上に該当するBNPを追加するか、グレーディングルールの番号を修正する\n5. パターン上にBNPを追加する場合は、背裏パターンのCB位置に正しい番号（300）のBNPを配置する\n6. グレーディングルールを修正する場合は、実際にパターン上に存在するBNP番号に変更する\n7. 修正後、グレーディングを再実行してエラーが解消されたことを確認する",
+      "answer_steps": [
+        "エラーメッセージを確認し、CB（センターバック）のBNP（Base Notch Point）番号を特定する",
+        "グレーディングルールで設定されているCB(BNP)の番号を確認する（例：9007 11 300）",
+        "パターン上で実際に存在するBNP番号を確認する",
+        "設定されているBNP番号（この例では「300」）がパターン内に存在しない場合、パターン上に該当するBNPを追加するか、グレーディングルールの番号を修正する",
+        "パターン上にBNPを追加する場合は、背裏パターンのCB位置に正しい番号（300）のBNPを配置する",
+        "グレーディングルールを修正する場合は、実際にパターン上に存在するBNP番号に変更する",
+        "修正後、グレーディングを再実行してエラーが解消されたことを確認する"
+      ],
+      "keywords": [
+        "グレーディング",
+        "CB",
+        "センターバック",
+        "BNP",
+        "エラー",
+        "背裏",
+        "裾線",
+        "9007"
+      ],
+      "tags": [
+        "グレーディング",
+        "CB",
+        "センターバック",
+        "BNP",
+        "エラー",
+        "背裏",
+        "裾線",
+        "9007"
+      ],
+      "note": "BNP（Base Notch Point）番号の不一致が原因。グレーディングルールで指定した番号がパターン上に存在しない場合にこのエラーが発生します。",
+      "confidence": "high",
+      "support_based": true,
+      "manual_ref": "GRShortcutKeyInfoList.pdf, M1.pdf, PM-BASIC.pdf, PMShortcutKeyInfoList.pdf, PM-Trace.pdf, Short.pdf, training_GRII_Comparison_v9.pdf, training_PMII_ComparisonList_v9.pdf, AutoAdvanceStart.pdf, GRII基本操作.pdf, M0.pdf, S0.pdf, T1.pdf, Torso.pdf, T0.pdf, training_PMII_Comparison_v9.pdf, 3D-base.pdf, GRII_WEBトレ2nd.pdf, GRII_WEBトレーニング.pdf, D0.pdf, R0.pdf, PM-3Dmanual.pdf, PM-manual.pdf",
+      "generated_at": "2026-02-25T01:55:34.118Z"
+    },
+    {
+      "faq_id": "その他-003",
+      "category": "パターン編集",
+      "question": "パーツ化している図形に、別パーツにある見返し線をコピーして持ってくることはできますか?",
+      "answer": "1. コピー先のパーツ化されている図形を選択します\n2. パーツ解除を実行して、図形を編集可能な状態にします\n3. 別パーツにある見返し線を選択します\n4. コピー機能を使用して見返し線をコピーします\n5. パーツ解除した図形に見返し線を貼り付けます\n6. 必要に応じて見返し線の位置を調整します\n7. 作業完了後、必要であれば再度パーツ化を実行します",
+      "answer_steps": [
+        "コピー先のパーツ化されている図形を選択します",
+        "パーツ解除を実行して、図形を編集可能な状態にします",
+        "別パーツにある見返し線を選択します",
+        "コピー機能を使用して見返し線をコピーします",
+        "パーツ解除した図形に見返し線を貼り付けます",
+        "必要に応じて見返し線の位置を調整します",
+        "作業完了後、必要であれば再度パーツ化を実行します"
+      ],
+      "keywords": [
+        "パーツ化",
+        "パーツ解除",
+        "見返し線",
+        "コピー",
+        "図形編集"
+      ],
+      "tags": [
+        "パーツ化",
+        "パーツ解除",
+        "見返し線",
+        "コピー",
+        "図形編集"
+      ],
+      "note": "パーツ化された図形は編集がロックされているため、コピー操作を行う前に必ずパーツ解除が必要です。作業完了後、元の状態に戻したい場合は再度パーツ化してください。",
+      "confidence": "high",
+      "support_based": true,
+      "manual_ref": "GRShortcutKeyInfoList.pdf, M1.pdf, PM-BASIC.pdf, PMShortcutKeyInfoList.pdf, PM-Trace.pdf, Short.pdf, training_GRII_Comparison_v9.pdf, training_PMII_ComparisonList_v9.pdf, AutoAdvanceStart.pdf, GRII基本操作.pdf, M0.pdf, S0.pdf, T1.pdf, Torso.pdf, T0.pdf, training_PMII_Comparison_v9.pdf, 3D-base.pdf, GRII_WEBトレ2nd.pdf, GRII_WEBトレーニング.pdf, D0.pdf, R0.pdf, PM-3Dmanual.pdf, PM-manual.pdf",
+      "generated_at": "2026-02-25T01:55:42.264Z"
+    },
+    {
+      "faq_id": "PM-操作-004",
+      "category": "データ変換",
+      "question": "DXFデータをPDTに変換する際、開いたパーツの向きや縫い代が正しく表示されない",
+      "answer": "1. DXFファイルを開く前に、ファイル読み込み設定を確認します\n2. ファイルメニューから「開く」を選択し、DXFファイルを指定します\n3. ファイルを開く際のダイアログで「読み込み設定」または「オプション」ボタンをクリックします\n4. パーツの向き設定を確認し、必要に応じて「自動方向設定」または「基準線による方向設定」を選択します\n5. 縫い代設定の項目を確認し、「縫い代情報を読み込む」または「縫い代を自動生成」にチェックを入れます\n6. 設定を適用してDXFファイルを読み込みます\n7. パーツの向きと縫い代が正しく表示されていることを確認した上で、PDT形式で保存します",
+      "answer_steps": [
+        "DXFファイルを開く前に、ファイル読み込み設定を確認します",
+        "ファイルメニューから「開く」を選択し、DXFファイルを指定します",
+        "ファイルを開く際のダイアログで「読み込み設定」または「オプション」ボタンをクリックします",
+        "パーツの向き設定を確認し、必要に応じて「自動方向設定」または「基準線による方向設定」を選択します",
+        "縫い代設定の項目を確認し、「縫い代情報を読み込む」または「縫い代を自動生成」にチェックを入れます",
+        "設定を適用してDXFファイルを読み込みます",
+        "パーツの向きと縫い代が正しく表示されていることを確認した上で、PDT形式で保存します"
+      ],
+      "keywords": [
+        "DXF",
+        "PDT",
+        "データ変換",
+        "パーツの向き",
+        "縫い代",
+        "読み込み設定",
+        "ファイル変換"
+      ],
+      "tags": [
+        "DXF",
+        "PDT",
+        "データ変換",
+        "パーツの向き",
+        "縫い代",
+        "読み込み設定",
+        "ファイル変換"
+      ],
+      "note": "DXFファイルの読み込み時は、ファイルを開く際の設定でパーツの向きや縫い代の扱いを指定する必要があります。DXF形式は汎用CADフォーマットのため、アパレル特有の情報（向き・縫い代）は読み込み設定で制御します",
+      "confidence": "high",
+      "support_based": true,
+      "manual_ref": "GRShortcutKeyInfoList.pdf, M1.pdf, PM-BASIC.pdf, PMShortcutKeyInfoList.pdf, PM-Trace.pdf, Short.pdf, training_GRII_Comparison_v9.pdf, training_PMII_ComparisonList_v9.pdf, AutoAdvanceStart.pdf, GRII基本操作.pdf, M0.pdf, S0.pdf, T1.pdf, Torso.pdf, T0.pdf, training_PMII_Comparison_v9.pdf, 3D-base.pdf, GRII_WEBトレ2nd.pdf, GRII_WEBトレーニング.pdf, D0.pdf, R0.pdf, PM-3Dmanual.pdf, PM-manual.pdf",
+      "generated_at": "2026-02-25T01:55:54.210Z"
+    },
+    {
+      "faq_id": "PM-操作-005",
+      "category": "出力・プロット",
+      "question": "PM2で配置プロットをUSB変換経由で複数枚出力すると、出力結果が正常に表示されない",
+      "answer": "1. USB変換での複数枚出力時に発生する既知の問題です。4枚以上の複数出力を行うと出力結果に異常が生じることが確認されています\n2. 回避策として、出力枚数を1?3枚ずつに分割して出力してください\n3. または、USB変換を使用せず、直接プロッター接続（パラレル接続またはネットワーク接続）での出力を検討してください\n4. それでも問題が解決しない場合は、プロッタードライバーの設定を確認し、最新版に更新してください\n5. プロッター側のメモリ容量が不足している可能性もあるため、プロッターの空きメモリを確認してください\n6. 問題が継続する場合は、出力データ（PLTファイル）のサイズを確認し、データが破損していないか検証してください\n7. 上記の対応でも改善しない場合は、USB変換機器のメーカー仕様とPM2の互換性を確認し、必要に応じてサポートへお問い合わせください",
+      "answer_steps": [
+        "USB変換での複数枚出力時に発生する既知の問題です。4枚以上の複数出力を行うと出力結果に異常が生じることが確認されています",
+        "回避策として、出力枚数を1?3枚ずつに分割して出力してください",
+        "または、USB変換を使用せず、直接プロッター接続（パラレル接続またはネットワーク接続）での出力を検討してください",
+        "それでも問題が解決しない場合は、プロッタードライバーの設定を確認し、最新版に更新してください",
+        "プロッター側のメモリ容量が不足している可能性もあるため、プロッターの空きメモリを確認してください",
+        "問題が継続する場合は、出力データ（PLTファイル）のサイズを確認し、データが破損していないか検証してください",
+        "上記の対応でも改善しない場合は、USB変換機器のメーカー仕様とPM2の互換性を確認し、必要に応じてサポートへお問い合わせください"
+      ],
+      "keywords": [
+        "PM2",
+        "配置プロット",
+        "USB変換",
+        "複数出力",
+        "出力エラー",
+        "プロッター"
+      ],
+      "tags": [
+        "PM2",
+        "配置プロット",
+        "USB変換",
+        "複数出力",
+        "出力エラー",
+        "プロッター"
+      ],
+      "note": "USB変換経由での複数枚出力時の既知の問題です。出力枚数を分割するか、直接接続を使用することで回避可能です",
+      "confidence": "high",
+      "support_based": true,
+      "manual_ref": "GRShortcutKeyInfoList.pdf, M1.pdf, PM-BASIC.pdf, PMShortcutKeyInfoList.pdf, PM-Trace.pdf, Short.pdf, training_GRII_Comparison_v9.pdf, training_PMII_ComparisonList_v9.pdf, AutoAdvanceStart.pdf, GRII基本操作.pdf, M0.pdf, S0.pdf, T1.pdf, Torso.pdf, T0.pdf, training_PMII_Comparison_v9.pdf, 3D-base.pdf, GRII_WEBトレ2nd.pdf, GRII_WEBトレーニング.pdf, D0.pdf, R0.pdf, PM-3Dmanual.pdf, PM-manual.pdf",
+      "generated_at": "2026-02-25T01:56:06.232Z"
+    }
+  ]
+}

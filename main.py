@@ -1417,18 +1417,25 @@ def generate_faq_id(category: str) -> str:
 # faqs配列形式・カテゴリ辞書形式（後方互換）の両方に対応。
 # ------------------------------------------------------------
 
+def _faq_id_matches(existing: dict, item_id: str) -> bool:
+    """
+    raw JSON上のFAQレコードは "id" と "faq_id" のどちらのキーで
+    保存されている場合もあるため（インポート元データにより異なる）、両方を照合する。
+    """
+    return existing.get("id") == item_id or existing.get("faq_id") == item_id
+
 def _faq_find_location(item_id: str):
     """item_idが格納されているリストとインデックスを探す。見つからなければNone。"""
     if "faqs" in state.faq_data and isinstance(state.faq_data["faqs"], list):
         for i, existing in enumerate(state.faq_data["faqs"]):
-            if isinstance(existing, dict) and existing.get("id") == item_id:
+            if isinstance(existing, dict) and _faq_id_matches(existing, item_id):
                 return (state.faq_data["faqs"], i)
         return None
     else:
         for category, items in state.faq_data.items():
             if isinstance(items, list):
                 for i, existing in enumerate(items):
-                    if isinstance(existing, dict) and existing.get("id") == item_id:
+                    if isinstance(existing, dict) and _faq_id_matches(existing, item_id):
                         return (items, i)
     return None
 
@@ -3149,9 +3156,9 @@ async def api_v1_list_faq(
 
 @app.get("/api/v1/faq/{faq_id}")
 async def api_v1_get_faq(faq_id: str, api_key_name: str = Depends(verify_api_key)):
-    """FAQ単体参照"""
+    """FAQ単体参照（一覧APIと同じ正規化済みフィールド構成で返す）"""
     await state.ensure_faq_loaded()
-    item = _faq_get_by_id(faq_id)
+    item = next((i for i in state.faq_items_flat if i.get("id") == faq_id), None)
     if not item:
         raise HTTPException(404, f"FAQ item '{faq_id}' not found")
     return item
