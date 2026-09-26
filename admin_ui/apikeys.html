@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>APIキー管理 - ACS FAQ Manager</title>
+  <style>
+    :root {
+      --brand: #0066cc;
+      --brand-dark: #004fa3;
+      --bg: #f6f7fb;
+      --white: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      font-size: 14px;
+    }
+
+    /* Header */
+    header {
+      background: #001529;
+      color: #fff;
+      padding: 0 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 56px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      gap: 16px;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .header-logo { font-size: 22px; }
+    .header-title { font-size: 16px; font-weight: 700; }
+    nav { display: flex; gap: 4px; overflow-x: auto; }
+    nav a {
+      color: rgba(255,255,255,0.8);
+      text-decoration: none;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    nav a:hover, nav a.active { background: rgba(255,255,255,0.12); color: #fff; }
+    .btn-logout {
+      background: none; border: none; color: rgba(255,255,255,0.8);
+      cursor: pointer; padding: 7px 12px; font-size: 13px;
+      border-radius: 6px; font-family: inherit; white-space: nowrap;
+    }
+    .btn-logout:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+    /* Main */
+    main {
+      flex: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 28px 24px;
+    }
+    .page-header { margin-bottom: 24px; }
+    .page-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .page-desc { color: var(--text-muted); font-size: 13px; }
+
+    /* Card */
+    .card {
+      background: var(--white);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    /* Form */
+    .new-key-form {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .form-group { flex: 1; min-width: 220px; }
+    .form-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+    .form-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+    }
+    .form-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Button */
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    .btn-primary { background: var(--brand); color: white; }
+    .btn-primary:hover { background: var(--brand-dark); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+    .btn-danger-outline {
+      background: #fff; color: var(--danger); border: 1px solid var(--danger);
+    }
+    .btn-danger-outline:hover { background: #fef2f2; }
+    .btn-outline {
+      background: #fff; color: var(--text); border: 1px solid var(--border);
+    }
+    .btn-outline:hover { background: #f9fafb; }
+
+    /* Alert */
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+    }
+    .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+    .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+    .key-preview {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      background: #f3f4f6;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-on { background: #d1fae5; color: #065f46; }
+    .badge-off { background: #f3f4f6; color: #6b7280; }
+    .row-actions { display: flex; gap: 6px; }
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+
+    /* Modal (新規キー表示) */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+      z-index: 1000; padding: 20px;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: #fff; border-radius: 12px; padding: 28px;
+      max-width: 520px; width: 100%; box-shadow: var(--shadow-md);
+    }
+    .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .modal-warning {
+      background: #fffbeb; border: 1px solid var(--warning); color: #92400e;
+      padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;
+    }
+    .modal-key-box {
+      display: flex; gap: 8px; align-items: center;
+      background: #f3f4f6; border-radius: 6px; padding: 10px 12px; margin-bottom: 16px;
+    }
+    .modal-key-text {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 13px; word-break: break-all; flex: 1;
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+    /* Footer */
+    footer {
+      background: var(--white);
+      border-top: 1px solid var(--border);
+      padding: 16px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <span class="header-logo">🏢</span>
+      <span class="header-title">ACS FAQ Manager</span>
+    </div>
+    <nav>
+      <a href="/admin/dashboard">ダッシュボード</a>
+      <a href="/admin/videos">動画データ</a>
+      <a href="/admin/synonyms">同義語</a>
+      <a href="/admin/faq">FAQ編集</a>
+      <a href="/admin/logs">ログ閲覧</a>
+      <a href="/admin/files">ファイル管理</a>
+      <a href="/admin/password">パスワード変更</a>
+      <a href="/admin/apikeys" class="active">APIキー</a>
+    </nav>
+    <button class="btn-logout" onclick="logout()">ログアウト</button>
+  </header>
+
+  <main>
+    <div class="page-header">
+      <h1 class="page-title">🔑 APIキー管理</h1>
+      <p class="page-desc">外部システムからFAQデータ・検索ログを参照/更新するためのAPIキーを発行・管理します</p>
+    </div>
+
+    <div id="alertContainer"></div>
+
+    <div class="card">
+      <div class="card-title">新規APIキーを発行</div>
+      <form class="new-key-form" onsubmit="createApiKey(event)">
+        <div class="form-group">
+          <label class="form-label">システム名（利用先の識別名）</label>
+          <input type="text" id="newKeyName" class="form-input" placeholder="例: グラフテック連携システム" required />
+        </div>
+        <button type="submit" class="btn btn-primary" id="createBtn">発行する</button>
+      </form>
+      <div class="form-hint">発行したキーの平文は発行直後のみ表示されます。以降は再表示できないため、必ずその場で控えてください。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">発行済みAPIキー一覧</div>
+      <div id="keysTableWrap">
+        <div class="empty-state">読み込み中...</div>
+      </div>
+    </div>
+  </main>
+
+  <footer>Copyright © 2026 Toray Advanced Computer Solution, Inc.</footer>
+
+  <!-- 新規発行キー表示モーダル -->
+  <div class="modal-overlay" id="newKeyModal">
+    <div class="modal">
+      <div class="modal-title">✅ APIキーを発行しました</div>
+      <div class="modal-warning">このキーは今だけ表示されます。閉じると二度と表示できません。必ずコピーして安全な場所に保管してください。</div>
+      <div class="modal-key-box">
+        <span class="modal-key-text" id="newKeyText"></span>
+        <button class="btn btn-outline btn-sm" onclick="copyNewKey()">コピー</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="closeNewKeyModal()">確認しました・閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var auth = localStorage.getItem('admin_auth');
+    if (!auth) {
+      window.location.href = '/admin';
+    }
+    var authData = JSON.parse(auth);
+    var authHeader = 'Basic ' + btoa(authData.username + ':' + authData.password);
+
+    function logout() {
+      localStorage.removeItem('admin_auth');
+      window.location.href = '/admin';
+    }
+
+    function showAlert(message, type) {
+      var alertContainer = document.getElementById('alertContainer');
+      var alertClass = type === 'success' ? 'alert-success' : 'alert-error';
+      alertContainer.innerHTML = '<div class="alert ' + alertClass + '">' + esc(message) + '</div>';
+      setTimeout(function () { alertContainer.innerHTML = ''; }, 6000);
+    }
+
+    function esc(s) {
+      var d = document.createElement('div');
+      d.textContent = (s === undefined || s === null) ? '' : String(s);
+      return d.innerHTML;
+    }
+
+    function authFetch(url, options) {
+      options = options || {};
+      options.headers = Object.assign({ 'Authorization': authHeader }, options.headers || {});
+      return fetch(url, options).then(function (res) {
+        if (res.status === 401) {
+          localStorage.removeItem('admin_auth');
+          window.location.href = '/admin';
+          throw new Error('認証が切れました');
+        }
+        return res;
+      });
+    }
+
+    function loadKeys() {
+      authFetch('/admin/api/apikeys')
+        .then(function (res) { return res.json(); })
+        .then(function (data) { renderKeys(data.keys || []); })
+        .catch(function (err) {
+          document.getElementById('keysTableWrap').innerHTML =
+            '<div class="empty-state">読み込みに失敗しました: ' + esc(err.message) + '</div>';
+        });
+    }
+
+    function renderKeys(keys) {
+      var wrap = document.getElementById('keysTableWrap');
+      if (!keys.length) {
+        wrap.innerHTML = '<div class="empty-state">発行済みのAPIキーはまだありません</div>';
+        return;
+      }
+
+      var html = '<table><thead><tr>' +
+        '<th>システム名</th><th>キー（先頭/末尾のみ表示）</th><th>状態</th><th>発行日時</th><th>操作</th>' +
+        '</tr></thead><tbody>';
+
+      keys.forEach(function (k) {
+        var createdAt = k.created_at ? new Date(k.created_at).toLocaleString('ja-JP') : '-';
+        var badge = k.enabled
+          ? '<span class="badge badge-on">有効</span>'
+          : '<span class="badge badge-off">無効</span>';
+        var toggleLabel = k.enabled ? '無効化' : '有効化';
+
+        html += '<tr>' +
+          '<td>' + esc(k.name) + '</td>' +
+          '<td><span class="key-preview">' + esc(k.key_preview) + '</span></td>' +
+          '<td>' + badge + '</td>' +
+          '<td>' + esc(createdAt) + '</td>' +
+          '<td><div class="row-actions">' +
+            '<button class="btn btn-outline btn-sm" onclick="toggleKey(\'' + esc(k.name).replace(/'/g, "\\'") + '\', ' + (!k.enabled) + ')">' + toggleLabel + '</button>' +
+            '<button class="btn btn-danger-outline btn-sm" onclick="deleteKey(\'' + esc(k.name).replace(/'/g, "\\'") + '\')">削除</button>' +
+          '</div></td>' +
+        '</tr>';
+      });
+
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    }
+
+    function createApiKey(event) {
+      event.preventDefault();
+      var nameInput = document.getElementById('newKeyName');
+      var name = nameInput.value.trim();
+      if (!name) return;
+
+      var btn = document.getElementById('createBtn');
+      btn.disabled = true;
+      btn.textContent = '発行中...';
+
+      authFetch('/admin/api/apikeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name })
+      })
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) { throw new Error(err.detail || '発行に失敗しました'); });
+          }
+          return res.json();
+        })
+        .then(function (result) {
+          nameInput.value = '';
+          showNewKeyModal(result.key);
+          loadKeys();
+        })
+        .catch(function (err) { showAlert(err.message, 'error'); })
+        .finally(function () {
+          btn.disabled = false;
+          btn.textContent = '発行する';
+        });
+    }
+
+    function toggleKey(name, enabled) {
+      authFetch('/admin/api/apikeys/' + encodeURIComponent(name), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enabled })
+      })
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) { throw new Error(err.detail || '更新に失敗しました'); });
+          }
+          showAlert(enabled ? 'キーを有効化しました' : 'キーを無効化しました', 'success');
+          loadKeys();
+        })
+        .catch(function (err) { showAlert(err.message, 'error'); });
+    }
+
+    function deleteKey(name) {
+      if (!confirm('APIキー「' + name + '」を削除します。このキーを使用している外部システムは即座にアクセスできなくなります。よろしいですか？')) {
+        return;
+      }
+      authFetch('/admin/api/apikeys/' + encodeURIComponent(name), { method: 'DELETE' })
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) { throw new Error(err.detail || '削除に失敗しました'); });
+          }
+          showAlert('APIキーを削除しました', 'success');
+          loadKeys();
+        })
+        .catch(function (err) { showAlert(err.message, 'error'); });
+    }
+
+    function showNewKeyModal(key) {
+      document.getElementById('newKeyText').textContent = key;
+      document.getElementById('newKeyModal').classList.add('show');
+    }
+    function closeNewKeyModal() {
+      document.getElementById('newKeyModal').classList.remove('show');
+      document.getElementById('newKeyText').textContent = '';
+    }
+    function copyNewKey() {
+      var text = document.getElementById('newKeyText').textContent;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(function () {
+          showAlert('クリップボードにコピーしました', 'success');
+        });
+      }
+    }
+
+    loadKeys();
+  </script>
+</body>
+</html>
