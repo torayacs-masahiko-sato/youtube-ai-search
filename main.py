@@ -5,7 +5,7 @@
 - æ—¢å­˜ã®é™çš„ãƒ•ã‚¡ã‚¤ãƒ«æ§‹æˆã¨ã®äº’æ›æ€§ç¶­æŒ
 """
 
-from fastapi import FastAPI, Query, HTTPException, Depends, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Query, HTTPException, Depends, BackgroundTasks, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +72,8 @@ FAQ_PATH         = DATA_DIR / "faq.json"
 CONFIG_PATH      = DATA_DIR / "config.json"
 USERS_PATH       = DATA_DIR / "users.json"
 SEARCH_LOG_PATH  = DATA_DIR / "search_logs.csv"
+API_KEYS_PATH    = DATA_DIR / "api_keys.json"      # 外部システム連携用APIキー
+FAQ_HISTORY_PATH = DATA_DIR / "faq_history.json"   # FAQ変更履歴
 
 # アップロードファイルパス（Disk上に保持）
 FILES_DIR        = DATA_DIR / "files"
@@ -668,6 +670,104 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
         )
 
 # ============================================
+# 外部システム連携API - 認証（APIキー方式）
+# ============================================
+# 管理画面はBasic認証(verify_admin)のまま、
+# 外部システムからのアクセスはAPIキー(X-API-Keyヘッダー)で認証する。
+# api_keys.json 形式:
+#   {"keys": [{"key": "...", "name": "システム名", "enabled": true, "created_at": "..."}]}
+
+def load_api_keys() -> list:
+    """api_keys.jsonからキー一覧を読み込む。失敗時は空リスト。"""
+    try:
+        if not API_KEYS_PATH.exists():
+            return []
+        with open(API_KEYS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("keys", [])
+    except Exception as e:
+        print(f"❌ Failed to load api_keys.json: {e}")
+        return []
+
+def save_api_keys(keys: list):
+    with open(API_KEYS_PATH, "w", encoding="utf-8") as f:
+        json.dump({"keys": keys}, f, ensure_ascii=False, indent=2)
+
+def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> str:
+    """
+    外部システム向けAPI(/api/v1/*)の認証。
+    有効なAPIキーが一致した場合、そのキーのname（呼び出し元システム名）を返す。
+    """
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header is required")
+
+    for entry in load_api_keys():
+        if entry.get("key") == x_api_key:
+            if not entry.get("enabled", True):
+                raise HTTPException(status_code=403, detail="This API key has been disabled")
+            return entry.get("name", "unknown")
+
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+# ============================================
+# 外部システム連携API - FAQ変更履歴
+# ============================================
+
+def record_faq_history(faq_id: str, action: str, changed_by: str, before, after):
+    """
+    FAQの作成・更新・削除を履歴として記録する。
+    更新時は差分がある項目のみを保存する。
+    """
+    try:
+        if FAQ_HISTORY_PATH.exists():
+            with open(FAQ_HISTORY_PATH, "r", encoding="utf-8") as f:
+                history_data = json.load(f)
+        else:
+            history_data = {"history": []}
+
+        changes = {}
+        if action == "update" and before and after:
+            keys = set(before.keys()) | set(after.keys())
+            for k in keys:
+                old_v, new_v = before.get(k), after.get(k)
+                if old_v != new_v:
+                    changes[k] = {"before": old_v, "after": new_v}
+        elif action == "create":
+            changes = after or {}
+        elif action == "delete":
+            changes = before or {}
+
+        entry = {
+            "faq_id": faq_id,
+            "action": action,           # create / update / delete
+            "changed_by": changed_by,   # admin または APIキーのname
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "changes": changes,
+        }
+        history_data.setdefault("history", []).append(entry)
+
+        with open(FAQ_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Failed to record FAQ history: {e}")
+
+def get_faq_history(faq_id: str = None) -> list:
+    """FAQ履歴を取得する。faq_id指定時はそのFAQのみに絞り込む。"""
+    try:
+        if not FAQ_HISTORY_PATH.exists():
+            return []
+        with open(FAQ_HISTORY_PATH, "r", encoding="utf-8") as f:
+            history_data = json.load(f)
+        rows = history_data.get("history", [])
+        if faq_id:
+            rows = [r for r in rows if r.get("faq_id") == faq_id]
+        return rows
+    except Exception as e:
+        print(f"❌ Failed to load faq_history.json: {e}")
+        return []
+
+
+# ============================================
 # Lifespanç®¡ç†
 # ============================================
 
@@ -790,7 +890,23 @@ def initialize_files():
             with open(USERS_PATH, 'w', encoding='utf-8') as f:
                 json.dump(default_users, f, ensure_ascii=False, indent=2)
             print("✅ users.json created")
-        
+
+        # api_keys.json の初期化（外部システム連携用）
+        if not API_KEYS_PATH.exists():
+            print("📁 Creating api_keys.json...")
+            default_api_keys = {"keys": []}
+            with open(API_KEYS_PATH, 'w', encoding='utf-8') as f:
+                json.dump(default_api_keys, f, ensure_ascii=False, indent=2)
+            print("✅ api_keys.json created")
+
+        # faq_history.json の初期化（FAQ変更履歴）
+        if not FAQ_HISTORY_PATH.exists():
+            print("📁 Creating faq_history.json...")
+            default_faq_history = {"history": []}
+            with open(FAQ_HISTORY_PATH, 'w', encoding='utf-8') as f:
+                json.dump(default_faq_history, f, ensure_ascii=False, indent=2)
+            print("✅ faq_history.json created")
+
         print("✅ File initialization completed")
         
     except Exception as e:
@@ -1294,103 +1410,115 @@ def generate_faq_id(category: str) -> str:
 
     return candidate
 
-@app.post("/admin/api/faq/item", dependencies=[Depends(verify_admin)])
-async def create_faq_item(item: dict, background_tasks: BackgroundTasks):
-    """FAQæ–°è¦ä½œæˆ"""
+# ------------------------------------------------------------
+# FAQ作成・更新・削除の共通処理
+# 管理画面API(/admin/api/faq/item, Basic認証)と
+# 外部システムAPI(/api/v1/faq, APIキー認証)の両方から利用する。
+# faqs配列形式・カテゴリ辞書形式（後方互換）の両方に対応。
+# ------------------------------------------------------------
+
+def _faq_find_location(item_id: str):
+    """item_idが格納されているリストとインデックスを探す。見つからなければNone。"""
+    if "faqs" in state.faq_data and isinstance(state.faq_data["faqs"], list):
+        for i, existing in enumerate(state.faq_data["faqs"]):
+            if isinstance(existing, dict) and existing.get("id") == item_id:
+                return (state.faq_data["faqs"], i)
+        return None
+    else:
+        for category, items in state.faq_data.items():
+            if isinstance(items, list):
+                for i, existing in enumerate(items):
+                    if isinstance(existing, dict) and existing.get("id") == item_id:
+                        return (items, i)
+    return None
+
+def _faq_get_by_id(item_id: str):
+    loc = _faq_find_location(item_id)
+    if not loc:
+        return None
+    container, i = loc
+    return container[i]
+
+async def _create_faq_item_internal(item: dict, changed_by: str = "admin") -> str:
+    """FAQ新規作成の共通処理。作成後のfaq_idを返す。"""
     await state.ensure_faq_loaded()
-    
+
     faq_id = (item.get("id") or "").strip()
     if faq_id:
-        # IDが指定されている場合は重複チェック
         if any(f.get("id") == faq_id for f in state.faq_items_flat):
             raise HTTPException(400, f"ID '{faq_id}' already exists")
     else:
-        # ID未指定の場合は自動採番（カテゴリ名-連番）
         faq_id = generate_faq_id(item.get("category", ""))
         item = dict(item)
         item["id"] = faq_id
-    
-    # faqs配列形式（実データはこちらの形式: {"meta": {...}, "faqs": [...]}）
+
     if "faqs" in state.faq_data and isinstance(state.faq_data["faqs"], list):
         state.faq_data["faqs"].append(item)
     else:
-        # カテゴリ辞書形式（後方互換）
         category = item.get("category", "その他")
         if category not in state.faq_data:
             state.faq_data[category] = []
         state.faq_data[category].append(item)
-    
+
     with open(FAQ_PATH, "w", encoding="utf-8") as f:
         json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
-    
+
+    record_faq_history(faq_id, "create", changed_by, None, item)
+    return faq_id
+
+async def _update_faq_item_internal(item_id: str, item: dict, changed_by: str = "admin"):
+    """FAQ更新の共通処理。見つからない場合は404を送出する。"""
+    await state.ensure_faq_loaded()
+
+    loc = _faq_find_location(item_id)
+    if not loc:
+        raise HTTPException(404, f"FAQ item '{item_id}' not found")
+
+    container, i = loc
+    before = dict(container[i]) if isinstance(container[i], dict) else None
+    container[i] = item
+
+    with open(FAQ_PATH, "w", encoding="utf-8") as f:
+        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+
+    record_faq_history(item_id, "update", changed_by, before, item)
+
+async def _delete_faq_item_internal(item_id: str, changed_by: str = "admin"):
+    """FAQ削除の共通処理。見つからない場合は404を送出する。"""
+    await state.ensure_faq_loaded()
+
+    loc = _faq_find_location(item_id)
+    if not loc:
+        raise HTTPException(404, f"FAQ item '{item_id}' not found")
+
+    container, i = loc
+    before = dict(container[i]) if isinstance(container[i], dict) else None
+    del container[i]
+
+    with open(FAQ_PATH, "w", encoding="utf-8") as f:
+        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+
+    record_faq_history(item_id, "delete", changed_by, before, None)
+
+
+@app.post("/admin/api/faq/item", dependencies=[Depends(verify_admin)])
+async def create_faq_item(item: dict, background_tasks: BackgroundTasks):
+    """FAQ新規作成（管理画面）"""
+    faq_id = await _create_faq_item_internal(item, changed_by="admin")
     background_tasks.add_task(reload_faq_data)
     return {"status": "created", "id": faq_id}
 
 @app.patch("/admin/api/faq/item/{item_id}", dependencies=[Depends(verify_admin)])
 async def update_faq_item(item_id: str, item: dict, background_tasks: BackgroundTasks):
-    """FAQæ›´æ–°"""
-    await state.ensure_faq_loaded()
-    
-    found = False
-    # faqs配列形式（Bug#1修正）
-    if "faqs" in state.faq_data and isinstance(state.faq_data["faqs"], list):
-        for i, existing in enumerate(state.faq_data["faqs"]):
-            if isinstance(existing, dict) and existing.get("id") == item_id:
-                state.faq_data["faqs"][i] = item
-                found = True
-                break
-    else:
-        # カテゴリ辞書形式（後方互換）
-        for category, items in state.faq_data.items():
-            if isinstance(items, list):
-                for i, existing in enumerate(items):
-                    if existing.get("id") == item_id:
-                        state.faq_data[category][i] = item
-                        found = True
-                        break
-            if found:
-                break
-    
-    if not found:
-        raise HTTPException(404, f"FAQ item '{item_id}' not found")
-    
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
-    
+    """FAQ更新（管理画面）"""
+    await _update_faq_item_internal(item_id, item, changed_by="admin")
     background_tasks.add_task(reload_faq_data)
     return {"status": "updated", "id": item_id}
 
 @app.delete("/admin/api/faq/item/{item_id}", dependencies=[Depends(verify_admin)])
 async def delete_faq_item(item_id: str, background_tasks: BackgroundTasks):
-    """FAQ削除"""
-    await state.ensure_faq_loaded()
-    
-    found = False
-    # faqs配列形式（Bug#1修正）
-    if "faqs" in state.faq_data and isinstance(state.faq_data["faqs"], list):
-        for i, existing in enumerate(state.faq_data["faqs"]):
-            if isinstance(existing, dict) and existing.get("id") == item_id:
-                del state.faq_data["faqs"][i]
-                found = True
-                break
-    else:
-        # カテゴリ辞書形式（後方互換）
-        for category, items in state.faq_data.items():
-            if isinstance(items, list):
-                for i, existing in enumerate(items):
-                    if existing.get("id") == item_id:
-                        del state.faq_data[category][i]
-                        found = True
-                        break
-            if found:
-                break
-    
-    if not found:
-        raise HTTPException(404, f"FAQ item '{item_id}' not found")
-    
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
-    
+    """FAQ削除（管理画面）"""
+    await _delete_faq_item_internal(item_id, changed_by="admin")
     background_tasks.add_task(reload_faq_data)
     return {"status": "deleted", "id": item_id}
 
@@ -2425,6 +2553,14 @@ def serve_admin_reset():
         return HTMLResponse("<h1>admin reset.html not found</h1>", status_code=404)
     return f.read_text(encoding="utf-8")
 
+@app.get("/admin/apikeys", response_class=HTMLResponse, include_in_schema=False)
+def serve_admin_apikeys():
+    """管理画面 - 外部連携APIキー管理"""
+    f = admin_path / "apikeys.html"
+    if not f.exists():
+        return HTMLResponse("<h1>admin apikeys.html not found</h1>", status_code=404)
+    return f.read_text(encoding="utf-8")
+
     return f.read_text(encoding="utf-8")
 
 # .htmlæ‹¡å¼µå­ä»˜ãã®ãƒ«ãƒ¼ãƒˆã‚‚è¿½åŠ 
@@ -2975,6 +3111,198 @@ async def update_config(config_data: dict):
     except Exception as e:
         print(f"❌ Config update error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
+# ============================================
+# 外部システム連携API (/api/v1/*)  ※ APIキー認証(X-API-Key)
+# ============================================
+# 管理画面用の /admin/api/* とは別に、パートナー企業や社内の
+# 他システムから安全にFAQ・ログを参照/更新できるようにするAPI。
+
+# ---- FAQ 参照・追加・更新 ----
+
+@app.get("/api/v1/faq")
+async def api_v1_list_faq(
+    offset: int = 0,
+    limit: int = 50,
+    q: str = "",
+    category: str = "",
+    api_key_name: str = Depends(verify_api_key),
+):
+    """FAQ一覧取得（キーワード・カテゴリ絞り込み対応）"""
+    await state.ensure_faq_loaded()
+    items = state.faq_items_flat
+
+    if category:
+        items = [i for i in items if i.get("category", "") == category]
+    if q:
+        q_lower = q.lower()
+        items = [
+            i for i in items
+            if q_lower in i.get("question", "").lower()
+            or q_lower in i.get("answer", "").lower()
+            or any(q_lower in kw.lower() for kw in i.get("keywords", []))
+        ]
+
+    total = len(items)
+    page_items = items[offset:offset + limit]
+    return {"items": page_items, "total": total, "has_more": (offset + limit) < total}
+
+@app.get("/api/v1/faq/{faq_id}")
+async def api_v1_get_faq(faq_id: str, api_key_name: str = Depends(verify_api_key)):
+    """FAQ単体参照"""
+    await state.ensure_faq_loaded()
+    item = _faq_get_by_id(faq_id)
+    if not item:
+        raise HTTPException(404, f"FAQ item '{faq_id}' not found")
+    return item
+
+@app.post("/api/v1/faq")
+async def api_v1_create_faq(item: dict, background_tasks: BackgroundTasks, api_key_name: str = Depends(verify_api_key)):
+    """FAQ新規追加（外部システムから）"""
+    faq_id = await _create_faq_item_internal(item, changed_by=api_key_name)
+    background_tasks.add_task(reload_faq_data)
+    return {"status": "created", "id": faq_id}
+
+@app.put("/api/v1/faq/{faq_id}")
+async def api_v1_update_faq(faq_id: str, item: dict, background_tasks: BackgroundTasks, api_key_name: str = Depends(verify_api_key)):
+    """FAQ更新（外部システムから）"""
+    await _update_faq_item_internal(faq_id, item, changed_by=api_key_name)
+    background_tasks.add_task(reload_faq_data)
+    return {"status": "updated", "id": faq_id}
+
+@app.get("/api/v1/faq/{faq_id}/history")
+async def api_v1_get_faq_history(faq_id: str, api_key_name: str = Depends(verify_api_key)):
+    """FAQ変更履歴の参照（作成・更新・削除の記録）"""
+    return {"faq_id": faq_id, "history": get_faq_history(faq_id)}
+
+# ---- 検索・クリックログ参照 ----
+
+@app.get("/api/v1/logs")
+async def api_v1_get_logs(
+    type: str = Query("", description="faq または video で絞り込み。空の場合は全件"),
+    date_from: str = Query("", description="YYYY-MM-DD形式。指定日以降のログのみ"),
+    date_to: str = Query("", description="YYYY-MM-DD形式。指定日以前のログのみ"),
+    offset: int = 0,
+    limit: int = 100,
+    api_key_name: str = Depends(verify_api_key),
+):
+    """検索・クリックの生ログを参照する"""
+    rows = parse_logs()
+
+    if type:
+        rows = [r for r in rows if r.get("result_type") == type]
+    if date_from:
+        try:
+            df = datetime.strptime(date_from, "%Y-%m-%d")
+            rows = [r for r in rows if r["dt"].replace(tzinfo=None) >= df]
+        except ValueError:
+            raise HTTPException(400, "date_from must be in YYYY-MM-DD format")
+    if date_to:
+        try:
+            dt_to = datetime.strptime(date_to, "%Y-%m-%d")
+            rows = [r for r in rows if r["dt"].replace(tzinfo=None) <= dt_to]
+        except ValueError:
+            raise HTTPException(400, "date_to must be in YYYY-MM-DD format")
+
+    total = len(rows)
+    # 新しい順に並べ替えてページング
+    rows_sorted = sorted(rows, key=lambda r: r["dt"], reverse=True)
+    page_rows = rows_sorted[offset:offset + limit]
+
+    logs = [
+        {
+            "timestamp": r["dt"].isoformat(),
+            "type": r.get("result_type", ""),
+            "query": r.get("query", ""),
+            "result_id": r.get("result_id", ""),
+        }
+        for r in page_rows
+    ]
+    return {"logs": logs, "total": total, "has_more": (offset + limit) < total}
+
+@app.get("/api/v1/logs/summary")
+async def api_v1_logs_summary(month: str = Query(..., description="YYYY-MM形式"), api_key_name: str = Depends(verify_api_key)):
+    """月別サマリー（日別件数・FAQ/動画別トップキーワード）"""
+    return await get_log_summary(month)
+
+@app.get("/api/v1/ranking/faq")
+async def api_v1_ranking_faq(limit: int = 10, api_key_name: str = Depends(verify_api_key)):
+    """FAQクリックランキング"""
+    return await get_faq_ranking(limit)
+
+@app.get("/api/v1/ranking/video")
+async def api_v1_ranking_video(limit: int = 10, api_key_name: str = Depends(verify_api_key)):
+    """動画クリックランキング"""
+    return await get_video_ranking(limit)
+
+# ---- APIキー管理（管理画面のBasic認証で保護） ----
+
+@app.get("/admin/api/apikeys", dependencies=[Depends(verify_admin)])
+async def admin_list_api_keys():
+    """APIキー一覧（キー本体はマスクして返す）"""
+    keys = load_api_keys()
+    masked = [
+        {
+            "name": k.get("name", ""),
+            "enabled": k.get("enabled", True),
+            "created_at": k.get("created_at", ""),
+            "key_preview": (k.get("key", "")[:6] + "..." + k.get("key", "")[-4:]) if len(k.get("key", "")) > 10 else "****",
+        }
+        for k in keys
+    ]
+    return {"keys": masked}
+
+@app.post("/admin/api/apikeys", dependencies=[Depends(verify_admin)])
+async def admin_create_api_key(payload: dict):
+    """
+    新規APIキーを発行する。
+    payload例: {"name": "グラフテック連携システム"}
+    発行したキーの平文はこのレスポンスでのみ返却される（以降はマスク表示のみ）。
+    """
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    keys = load_api_keys()
+    if any(k.get("name") == name for k in keys):
+        raise HTTPException(400, f"API key with name '{name}' already exists")
+
+    new_key = secrets.token_urlsafe(32)
+    keys.append({
+        "key": new_key,
+        "name": name,
+        "enabled": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    save_api_keys(keys)
+
+    return {"status": "created", "name": name, "key": new_key}
+
+@app.delete("/admin/api/apikeys/{name}", dependencies=[Depends(verify_admin)])
+async def admin_delete_api_key(name: str):
+    """APIキーを削除する"""
+    keys = load_api_keys()
+    new_keys = [k for k in keys if k.get("name") != name]
+    if len(new_keys) == len(keys):
+        raise HTTPException(404, f"API key '{name}' not found")
+    save_api_keys(new_keys)
+    return {"status": "deleted", "name": name}
+
+@app.patch("/admin/api/apikeys/{name}", dependencies=[Depends(verify_admin)])
+async def admin_toggle_api_key(name: str, payload: dict):
+    """APIキーの有効/無効を切り替える。payload例: {"enabled": false}"""
+    keys = load_api_keys()
+    found = False
+    for k in keys:
+        if k.get("name") == name:
+            k["enabled"] = bool(payload.get("enabled", True))
+            found = True
+            break
+    if not found:
+        raise HTTPException(404, f"API key '{name}' not found")
+    save_api_keys(keys)
+    return {"status": "updated", "name": name}
+
 
 if __name__ == "__main__":
     import uvicorn
