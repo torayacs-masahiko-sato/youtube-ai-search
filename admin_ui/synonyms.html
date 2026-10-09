@@ -82,6 +82,7 @@
     .form-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
     footer { background: #001529; color: rgba(255,255,255,0.6); padding: 16px 24px; text-align: center; font-size: 12px; }
   </style>
+  <script src="/admin/static/auth.js"></script>
 </head>
 <body>
   <header>
@@ -96,6 +97,7 @@
       <a href="/admin/faq">FAQ</a>
       <a href="/admin/logs">ログ</a>
       <a href="/admin/apikeys">APIキー</a>
+      <a href="/admin/users">管理者管理</a>
     </nav>
     <button class="btn-logout" onclick="logout()">ログアウト</button>
   </header>
@@ -159,7 +161,7 @@
     async function loadSynonyms() {
       try {
         var authData = JSON.parse(auth);
-        var authHeader = 'Basic ' + btoa(authData.username + ':' + authData.password);
+        var authHeader = 'Bearer ' + authData.token;
         
         var response = await fetch('/admin/api/synonyms', {
           headers: { 'Authorization': authHeader }
@@ -287,7 +289,7 @@
     async function saveSynonyms() {
       try {
         var authData = JSON.parse(auth);
-        var authHeader = 'Basic ' + btoa(authData.username + ':' + authData.password);
+        var authHeader = 'Bearer ' + authData.token;
         
         var response = await fetch('/admin/api/synonyms', {
           method: 'PUT',

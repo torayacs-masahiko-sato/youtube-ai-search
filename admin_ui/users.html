@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>管理者管理 - ACS FAQ Manager</title>
+  <script src="/admin/static/auth.js"></script>
+  <style>
+    :root {
+      --brand: #0066cc;
+      --brand-dark: #004fa3;
+      --bg: #f6f7fb;
+      --white: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      font-size: 14px;
+    }
+
+    /* Header */
+    header {
+      background: #001529;
+      color: #fff;
+      padding: 0 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 56px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      gap: 16px;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .header-logo { font-size: 22px; }
+    .header-title { font-size: 16px; font-weight: 700; }
+    nav { display: flex; gap: 4px; overflow-x: auto; }
+    nav a {
+      color: rgba(255,255,255,0.8);
+      text-decoration: none;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    nav a:hover, nav a.active { background: rgba(255,255,255,0.12); color: #fff; }
+    .btn-logout {
+      background: none; border: none; color: rgba(255,255,255,0.8);
+      cursor: pointer; padding: 7px 12px; font-size: 13px;
+      border-radius: 6px; font-family: inherit; white-space: nowrap;
+    }
+    .btn-logout:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+    /* Main */
+    main {
+      flex: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 28px 24px;
+    }
+    .page-header { margin-bottom: 24px; }
+    .page-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .page-desc { color: var(--text-muted); font-size: 13px; }
+
+    /* Card */
+    .card {
+      background: var(--white);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    /* Form */
+    .new-key-form {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .form-group { flex: 1; min-width: 220px; }
+    .form-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+    .form-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+    }
+    .form-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* Button */
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    .btn-primary { background: var(--brand); color: white; }
+    .btn-primary:hover { background: var(--brand-dark); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+    .btn-danger-outline {
+      background: #fff; color: var(--danger); border: 1px solid var(--danger);
+    }
+    .btn-danger-outline:hover { background: #fef2f2; }
+    .btn-outline {
+      background: #fff; color: var(--text); border: 1px solid var(--border);
+    }
+    .btn-outline:hover { background: #f9fafb; }
+
+    /* Alert */
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+    }
+    .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+    .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+    .key-preview {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      background: #f3f4f6;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-on { background: #d1fae5; color: #065f46; }
+    .badge-off { background: #f3f4f6; color: #6b7280; }
+    .row-actions { display: flex; gap: 6px; }
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+
+    /* Modal (新規キー表示) */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+      z-index: 1000; padding: 20px;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: #fff; border-radius: 12px; padding: 28px;
+      max-width: 520px; width: 100%; box-shadow: var(--shadow-md);
+    }
+    .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 10px; }
+    .modal-warning {
+      background: #fffbeb; border: 1px solid var(--warning); color: #92400e;
+      padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 16px;
+    }
+    .modal-key-box {
+      display: flex; gap: 8px; align-items: center;
+      background: #f3f4f6; border-radius: 6px; padding: 10px 12px; margin-bottom: 16px;
+    }
+    .modal-key-text {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 13px; word-break: break-all; flex: 1;
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+    /* Footer */
+    footer {
+      background: var(--white);
+      border-top: 1px solid var(--border);
+      padding: 16px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <span class="header-logo">🏢</span>
+      <span class="header-title">ACS FAQ Manager</span>
+    </div>
+    <nav>
+      <a href="/admin/dashboard">ダッシュボード</a>
+      <a href="/admin/videos">動画データ</a>
+      <a href="/admin/synonyms">同義語</a>
+      <a href="/admin/faq">FAQ編集</a>
+      <a href="/admin/logs">ログ閲覧</a>
+      <a href="/admin/files">ファイル管理</a>
+      <a href="/admin/password">パスワード変更</a>
+      <a href="/admin/apikeys">APIキー</a>
+      <a href="/admin/users" class="active">管理者管理</a>
+    </nav>
+    <button class="btn-logout" onclick="logout()">ログアウト</button>
+  </header>
+
+  <main>
+    <div class="page-header">
+      <h1 class="page-title">👥 管理者管理</h1>
+      <p class="page-desc">管理画面にログインできる管理者の追加・削除、パスワード/多要素認証の再設定を行います</p>
+    </div>
+
+    <div id="alertContainer"></div>
+
+    <div class="card">
+      <div class="card-title">管理者を追加</div>
+      <form class="new-key-form" onsubmit="createUser(event)">
+        <div class="form-group">
+          <label class="form-label">ユーザー名</label>
+          <input type="text" id="newUsername" class="form-input" placeholder="例: tanaka" required autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">初期パスワード（10文字以上）</label>
+          <input type="text" id="newPassword" class="form-input" placeholder="本人に伝える一時パスワード" required autocomplete="off" />
+        </div>
+        <button type="submit" class="btn btn-primary" id="createBtn">追加する</button>
+      </form>
+      <div class="form-hint">追加された管理者は、初回ログイン時に「認証アプリの登録」と「パスワード変更」を行います。初期パスワードは本人にのみ安全な方法で伝えてください。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">管理者一覧</div>
+      <div id="usersWrap"><div class="empty-state">読み込み中...</div></div>
+      <div class="form-hint" style="margin-top:12px;">
+        ・<b>パスワード再設定</b>：パスワードを忘れた管理者に一時パスワードを設定します（その管理者の現在のログインは無効になります）<br>
+        ・<b>MFAリセット</b>：スマホ紛失・機種変更時に認証アプリの登録を解除します（次回ログイン時に再登録）
+      </div>
+    </div>
+  </main>
+
+  <footer>Copyright © 2026 Toray Advanced Computer Solution, Inc.</footer>
+
+  <script>
+    var authData = JSON.parse(localStorage.getItem('admin_auth') || '{}');
+    var authHeader = 'Bearer ' + authData.token;
+
+    function logout() { localStorage.removeItem('admin_auth'); window.location.href = '/admin'; }
+    function esc(s) { var d = document.createElement('div'); d.textContent = (s == null) ? '' : String(s); return d.innerHTML; }
+    function showAlert(message, type) {
+      var c = document.getElementById('alertContainer');
+      c.innerHTML = '<div class="alert ' + (type === 'success' ? 'alert-success' : 'alert-error') + '">' + esc(message) + '</div>';
+      window.scrollTo(0, 0);
+      setTimeout(function () { c.innerHTML = ''; }, 7000);
+    }
+    function api(url, method, body) {
+      var opt = { method: method || 'GET', headers: { 'Authorization': authHeader } };
+      if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+      return fetch(url, opt).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) { throw new Error(data.detail || 'エラーが発生しました'); }
+          return data;
+        });
+      });
+    }
+
+    function loadUsers() {
+      api('/admin/api/users').then(function (data) {
+        var me = data.me, rows = data.users || [];
+        var html = '<table><thead><tr><th>ユーザー名</th><th>多要素認証</th><th>リカバリーコード残</th><th>状態</th><th>操作</th></tr></thead><tbody>';
+        rows.forEach(function (u, i) {
+          var mfa = u.mfa_enabled ? '<span class="badge badge-on">登録済み</span>' : '<span class="badge badge-off">未登録</span>';
+          var st = u.must_change_password ? '<span class="badge" style="background:#fffbeb;color:#92400e;">パスワード変更待ち</span>' : '';
+          var self = (u.username === me);
+          html += '<tr><td>' + esc(u.username) + (self ? ' <span style="color:#6b7280;">（あなた）</span>' : '') + '</td>'
+            + '<td>' + mfa + '</td><td>' + (u.mfa_enabled ? esc(u.recovery_codes_remaining) + ' 件' : '-') + '</td><td>' + st + '</td>'
+            + '<td><div class="row-actions">'
+            + '<button class="btn btn-outline btn-sm" data-act="pw" data-i="' + i + '">パスワード再設定</button>'
+            + '<button class="btn btn-outline btn-sm" data-act="mfa" data-i="' + i + '">MFAリセット</button>'
+            + (self ? '' : '<button class="btn btn-danger-outline btn-sm" data-act="del" data-i="' + i + '">削除</button>')
+            + '</div></td></tr>';
+        });
+        html += '</tbody></table>';
+        var wrap = document.getElementById('usersWrap');
+        wrap.innerHTML = html;
+        wrap.querySelectorAll('button[data-act]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var u = rows[parseInt(b.getAttribute('data-i'), 10)];
+            ({ pw: resetPassword, mfa: resetMfa, del: deleteUser })[b.getAttribute('data-act')](u.username);
+          });
+        });
+      }).catch(function (e) {
+        document.getElementById('usersWrap').innerHTML = '<div class="empty-state">読み込みに失敗しました: ' + esc(e.message) + '</div>';
+      });
+    }
+
+    function createUser(ev) {
+      ev.preventDefault();
+      var u = document.getElementById('newUsername'), p = document.getElementById('newPassword');
+      api('/admin/api/users', 'POST', { username: u.value.trim(), password: p.value })
+        .then(function () { showAlert('管理者「' + u.value.trim() + '」を追加しました。初期パスワードを本人に伝えてください。', 'success'); u.value = ''; p.value = ''; loadUsers(); })
+        .catch(function (e) { showAlert(e.message, 'error'); });
+    }
+    function resetPassword(name) {
+      var pw = prompt('「' + name + '」の一時パスワードを入力してください（10文字以上）。\n本人は次回ログイン後にパスワードを変更します。');
+      if (!pw) return;
+      api('/admin/api/users/' + encodeURIComponent(name) + '/reset-password', 'POST', { new_password: pw })
+        .then(function () { showAlert('「' + name + '」のパスワードを再設定しました。一時パスワードを本人に伝えてください。', 'success'); loadUsers(); })
+        .catch(function (e) { showAlert(e.message, 'error'); });
+    }
+    function resetMfa(name) {
+      if (!confirm('「' + name + '」の多要素認証を解除します。\n本人は次回ログイン時に認証アプリを再登録します。よろしいですか？')) return;
+      api('/admin/api/users/' + encodeURIComponent(name) + '/reset-mfa', 'POST', {})
+        .then(function () { showAlert('「' + name + '」のMFAを解除しました。', 'success'); loadUsers(); })
+        .catch(function (e) { showAlert(e.message, 'error'); });
+    }
+    function deleteUser(name) {
+      if (!confirm('管理者「' + name + '」を削除します。よろしいですか？')) return;
+      api('/admin/api/users/' + encodeURIComponent(name), 'DELETE')
+        .then(function () { showAlert('「' + name + '」を削除しました。', 'success'); loadUsers(); })
+        .catch(function (e) { showAlert(e.message, 'error'); });
+    }
+    loadUsers();
+  </script>
+</body>
+</html>

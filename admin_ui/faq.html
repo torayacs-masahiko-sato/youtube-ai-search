@@ -226,6 +226,7 @@
     .progress-text { font-size: 13px; color: var(--text-muted); }
 
   </style>
+  <script src="/admin/static/auth.js"></script>
 </head>
 <body>
   <header>
@@ -241,6 +242,7 @@
       <a href="/admin/logs">ログ閲覧</a>
       <a href="/admin/files">ファイル管理</a>
       <a href="/admin/apikeys">APIキー</a>
+      <a href="/admin/users">管理者管理</a>
     </nav>
     <button class="btn-logout" onclick="logout()">ログアウト</button>
   </header>
@@ -404,7 +406,7 @@
     var auth = localStorage.getItem('admin_auth');
     if (!auth) { window.location.href = '/admin'; }
     var authData = JSON.parse(auth);
-    var authHeader = 'Basic ' + btoa(authData.username + ':' + authData.password);
+    var authHeader = 'Bearer ' + authData.token;
 
     var allItems = [];
     var editingId = null;
@@ -431,7 +433,7 @@
       var auth = getAuth();
       if (!auth) return {};
       return {
-        'Authorization': 'Basic ' + btoa(auth.username + ':' + auth.password),
+        'Authorization': 'Bearer ' + auth.token,
         'Content-Type': 'application/json'
       };
     }
@@ -682,7 +684,7 @@
     updateProgress(30, 'FAQデータを取得中...');
 
     fetch('/admin/api/faq/export', {
-      headers: { 'Authorization': 'Basic ' + btoa(auth.username + ':' + auth.password) }
+      headers: { 'Authorization': 'Bearer ' + auth.token }
     })
     .then(function(res) {
       if (!res.ok) {
@@ -728,7 +730,7 @@
     updateProgress(40, 'テンプレートを取得中...');
 
     fetch('/admin/api/faq/export/template', {
-      headers: { 'Authorization': 'Basic ' + btoa(auth.username + ':' + auth.password) }
+      headers: { 'Authorization': 'Bearer ' + auth.token }
     })
     .then(function(res) {
       if (!res.ok) { throw new Error('HTTP ' + res.status); }
@@ -825,7 +827,7 @@
     fetch('/admin/api/faq/import', {
       method: 'POST',
       headers: {
-        'Authorization': 'Basic ' + btoa(auth.username + ':' + auth.password),
+        'Authorization': 'Bearer ' + auth.token,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(data)
@@ -879,7 +881,7 @@
 
     fetch('/admin/api/faq/all', {
       method: 'DELETE',
-      headers: { 'Authorization': 'Basic ' + btoa(auth.username + ':' + auth.password) }
+      headers: { 'Authorization': 'Bearer ' + auth.token }
     })
     .then(function(res) {
       if (!res.ok) {

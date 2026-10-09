@@ -105,6 +105,7 @@
     .badge-doc { background: #f0fdf4; color: #16a34a; }
     .badge-other { background: #f9fafb; color: var(--text-muted); }
   </style>
+  <script src="/admin/static/auth.js"></script>
 </head>
 <body>
 
@@ -120,6 +121,7 @@
       <a href="/admin/logs">ログ閲覧</a>
       <a href="/admin/files" class="active">ファイル管理</a>
       <a href="/admin/apikeys">APIキー</a>
+      <a href="/admin/users">管理者管理</a>
     </nav>
     <button class="btn-logout" onclick="logout()">ログアウト</button>
   </header>
@@ -184,7 +186,7 @@
 
     function getAuthHeader() {
       var authData = JSON.parse(auth);
-      return 'Basic ' + btoa(authData.username + ':' + authData.password);
+      return 'Bearer ' + authData.token;
     }
 
     // ファイルアイコン

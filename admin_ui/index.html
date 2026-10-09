@@ -117,84 +117,234 @@
       color: rgba(255,255,255,0.75);
       font-size: 12px;
     }
-  </style>
+  
+    .step { display: none; }
+    .step.active { display: block; }
+    .step-desc { color: #4b5563; font-size: 13px; line-height: 1.7; margin-bottom: 18px; }
+    .code-input { text-align: center; font-size: 24px; letter-spacing: 8px; font-family: Consolas, monospace; }
+    .link-btn { background: none; border: none; color: #0066cc; cursor: pointer; font-size: 13px; font-family: inherit; text-decoration: underline; }
+    .qr-box { text-align: center; margin: 4px 0 12px; }
+    .qr-box svg { width: 180px; height: 180px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; background: #fff; }
+    .secret-box { background: #f3f4f6; border-radius: 8px; padding: 8px 12px; font-family: Consolas, monospace; font-size: 13px; word-break: break-all; text-align: center; margin-bottom: 14px; }
+    .notice { background: #eff6ff; color: #1e40af; padding: 11px 14px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; display: none; border-left: 3px solid #3b82f6; }
+    .recovery-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: #f3f4f6; border-radius: 8px; padding: 12px; margin: 10px 0 12px; font-family: Consolas, monospace; font-size: 14px; text-align: center; }
+    .warn { background: #fffbeb; border: 1px solid #f59e0b; color: #92400e; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.6; margin-bottom: 12px; }
+    .btn-sub { width: 100%; padding: 10px; background: #fff; color: #374151; border: 1.5px solid #d1d5db; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit; margin-bottom: 10px; }
+    .btn-sub:hover { background: #f9fafb; }
+    .btn-login:disabled { opacity: 0.5; cursor: not-allowed; }
+    .login-card { max-width: 420px; }
+
+</style>
 </head>
 <body>
 
   <div class="login-card">
     <div class="logo">🏢</div>
     <h1 class="title">ACS FAQ Manager</h1>
-    <p class="subtitle">管理画面ログイン</p>
+    <p class="subtitle" id="subtitle">管理画面ログイン</p>
 
+    <div id="notice" class="notice"></div>
     <div id="errorMsg" class="error"></div>
 
-    <div id="loginForm">
+    <!-- STEP 1: ユーザー名 + パスワード -->
+    <div class="step active" id="stepCreds">
       <div class="form-group">
         <label class="form-label" for="username">ユーザー名</label>
         <input type="text" id="username" class="form-input" autocomplete="username" autofocus />
       </div>
-
       <div class="form-group">
         <label class="form-label" for="password">パスワード</label>
         <input type="password" id="password" class="form-input" autocomplete="current-password" />
       </div>
+      <button type="button" class="btn-login" id="loginBtn">次へ</button>
+      <p class="help-text" style="margin-top:16px;">パスワードを忘れた場合は、他の管理者に再設定を依頼してください</p>
+    </div>
 
-      <button type="button" class="btn-login" id="loginBtn">ログイン</button>
-      
-      <div style="text-align: center; margin-top: 16px;">
-        <a href="/admin/reset" style="color: #667eea; text-decoration: none; font-size: 13px;">パスワードを忘れた場合</a>
+    <!-- STEP 2: 認証アプリのコード -->
+    <div class="step" id="stepCode">
+      <p class="step-desc" id="codeDesc">認証アプリ（Google Authenticator / Microsoft Authenticator など）に表示されている<b>6桁のコード</b>を入力してください。</p>
+      <div class="form-group">
+        <label class="form-label" for="code" id="codeLabel">認証コード</label>
+        <input type="text" id="code" class="form-input code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" />
+      </div>
+      <button type="button" class="btn-login" id="codeBtn">ログイン</button>
+      <div style="text-align:center;margin-top:14px;">
+        <button type="button" class="link-btn" id="toggleRecovery">スマホが使えない場合（リカバリーコード）</button>
+      </div>
+      <div style="text-align:center;margin-top:8px;">
+        <button type="button" class="link-btn" onclick="restart()">最初からやり直す</button>
       </div>
     </div>
 
+    <!-- STEP 3: 認証アプリの初回登録 -->
+    <div class="step" id="stepSetup">
+      <p class="step-desc">セキュリティ強化のため、<b>認証アプリの登録</b>が必要です（初回のみ）。<br>
+        ① スマホで認証アプリを開き、「＋」から下のQRコードを読み取る<br>
+        ② アプリに表示された6桁のコードを入力する</p>
+      <div class="qr-box" id="qrBox"></div>
+      <p class="step-desc" style="margin-bottom:6px;font-size:12px;">QRコードが読み取れない場合は、アプリの「キーを入力」から次の文字列を入力してください。</p>
+      <div class="secret-box" id="secretText"></div>
+      <div class="form-group">
+        <label class="form-label" for="setupCode">アプリに表示された6桁のコード</label>
+        <input type="text" id="setupCode" class="form-input code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" />
+      </div>
+      <button type="button" class="btn-login" id="setupBtn">登録して続行</button>
+      <div style="text-align:center;margin-top:10px;">
+        <button type="button" class="link-btn" onclick="restart()">最初からやり直す</button>
+      </div>
+    </div>
 
+    <!-- STEP 4: リカバリーコード表示 -->
+    <div class="step" id="stepRecovery">
+      <p class="step-desc"><b>リカバリーコード</b>を保管してください。スマホを紛失・機種変更して認証アプリが使えなくなったときに、<b>1つにつき1回だけ</b>ログインに使えます。</p>
+      <div class="warn">⚠ この画面を閉じると二度と表示されません。印刷するか、パスワード管理ツール等の安全な場所に保存してください。</div>
+      <div class="recovery-grid" id="recoveryGrid"></div>
+      <button type="button" class="btn-sub" id="copyRecovery">コードをコピー</button>
+      <button type="button" class="btn-sub" id="downloadRecovery">テキストファイルで保存</button>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:10px 0 14px;">
+        <input type="checkbox" id="savedCheck"> コードを安全な場所に保管しました
+      </label>
+      <button type="button" class="btn-login" id="finishBtn" disabled>管理画面へ進む</button>
+    </div>
   </div>
 
   <footer>Copyright © 2026 Toray Advanced Computer Solution, Inc.</footer>
 
   <script>
-    function doLogin() {
-      var username = document.getElementById('username').value;
-      var password = document.getElementById('password').value;
-      var errorMsg = document.getElementById('errorMsg');
-      var btn = document.getElementById('loginBtn');
+    var state = { mfaToken: '', setupToken: '', session: null, recovery: [], useRecovery: false };
+    var $ = function (id) { return document.getElementById(id); };
 
-      errorMsg.style.display = 'none';
-      btn.textContent = 'ログイン中...';
-      btn.disabled = true;
+    function showStep(id) {
+      ['stepCreds', 'stepCode', 'stepSetup', 'stepRecovery'].forEach(function (s) {
+        $(s).classList.toggle('active', s === id);
+      });
+      hideError();
+    }
+    function showError(msg) { var e = $('errorMsg'); e.textContent = msg; e.style.display = 'block'; }
+    function hideError() { $('errorMsg').style.display = 'none'; }
+    function busy(btn, on, label) { btn.disabled = on; if (label) btn.textContent = label; }
 
-      var authHeader = 'Basic ' + btoa(username + ':' + password);
-
-      // Bug#5修正: 正しいAPIパス /admin/api/faq を使用
-      fetch('/admin/api/faq', {
-        headers: { 'Authorization': authHeader }
-      })
-      .then(function(res) {
-        if (res.ok) {
-          localStorage.setItem('admin_auth', JSON.stringify({ username: username, password: password }));
-          window.location.href = '/admin/dashboard';
-        } else {
-          errorMsg.textContent = 'ユーザー名またはパスワードが正しくありません';
-          errorMsg.style.display = 'block';
-          btn.textContent = 'ログイン';
-          btn.disabled = false;
-        }
-      })
-      .catch(function(error) {
-        errorMsg.textContent = 'サーバーに接続できませんでした';
-        errorMsg.style.display = 'block';
-        btn.textContent = 'ログイン';
-        btn.disabled = false;
-        console.error('Login error:', error);
+    function post(url, body) {
+      return fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) { throw new Error(data.detail || 'エラーが発生しました'); }
+          return data;
+        });
       });
     }
 
-    document.getElementById('loginBtn').addEventListener('click', doLogin);
-    document.getElementById('password').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') doLogin();
+    function restart() {
+      state = { mfaToken: '', setupToken: '', session: null, recovery: [], useRecovery: false };
+      $('password').value = ''; $('code').value = ''; $('setupCode').value = '';
+      showStep('stepCreds'); $('username').focus();
+    }
+
+    // STEP1: パスワード確認
+    function doLogin() {
+      var btn = $('loginBtn');
+      busy(btn, true, '確認中...'); hideError();
+      post('/admin/api/auth/login', { username: $('username').value.trim(), password: $('password').value })
+        .then(function (r) {
+          if (r.status === 'mfa_required') {
+            state.mfaToken = r.mfa_token; setCodeMode(false); showStep('stepCode'); $('code').focus();
+          } else if (r.status === 'mfa_setup_required') {
+            state.setupToken = r.setup_token; startSetup();
+          }
+        })
+        .catch(function (e) { showError(e.message || 'サーバーに接続できませんでした'); })
+        .then(function () { busy(btn, false, '次へ'); });
+    }
+
+    // STEP2: 認証コード / リカバリーコード
+    function setCodeMode(recovery) {
+      state.useRecovery = recovery;
+      var input = $('code');
+      input.value = '';
+      input.maxLength = recovery ? 11 : 6;
+      input.placeholder = recovery ? 'XXXXX-XXXXX' : '000000';
+      input.inputMode = recovery ? 'text' : 'numeric';
+      input.style.letterSpacing = recovery ? '2px' : '8px';
+      $('codeLabel').textContent = recovery ? 'リカバリーコード' : '認証コード';
+      $('codeDesc').innerHTML = recovery
+        ? '保管しているリカバリーコードを1つ入力してください（<b>1回使うと無効</b>になります）。ログイン後、認証アプリを再登録することをおすすめします。'
+        : '認証アプリ（Google Authenticator / Microsoft Authenticator など）に表示されている<b>6桁のコード</b>を入力してください。';
+      $('toggleRecovery').textContent = recovery ? '認証アプリのコードを使う' : 'スマホが使えない場合（リカバリーコード）';
+    }
+    function doCode() {
+      var btn = $('codeBtn');
+      busy(btn, true, '確認中...'); hideError();
+      post('/admin/api/auth/mfa', { mfa_token: state.mfaToken, code: $('code').value })
+        .then(function (r) { finishLogin(r); })
+        .catch(function (e) {
+          showError(e.message);
+          if (e.message.indexOf('有効期限') !== -1) { setTimeout(restart, 1500); }
+        })
+        .then(function () { busy(btn, false, 'ログイン'); });
+    }
+
+    // STEP3: 認証アプリ初回登録
+    function startSetup() {
+      post('/admin/api/auth/setup/start', { setup_token: state.setupToken })
+        .then(function (r) {
+          $('qrBox').innerHTML = r.qr_svg || '<p style="color:#6b7280;font-size:12px;">QRコードを表示できません。下の文字列を手入力してください。</p>';
+          $('secretText').textContent = r.secret.replace(/(.{4})/g, '$1 ').trim();
+          showStep('stepSetup'); $('setupCode').focus();
+        })
+        .catch(function (e) { showError(e.message); });
+    }
+    function doSetupConfirm() {
+      var btn = $('setupBtn');
+      busy(btn, true, '確認中...'); hideError();
+      post('/admin/api/auth/setup/confirm', { setup_token: state.setupToken, code: $('setupCode').value })
+        .then(function (r) {
+          state.session = r; state.recovery = r.recovery_codes || [];
+          var grid = $('recoveryGrid'); grid.innerHTML = '';
+          state.recovery.forEach(function (c) { var d = document.createElement('div'); d.textContent = c; grid.appendChild(d); });
+          showStep('stepRecovery');
+        })
+        .catch(function (e) {
+          showError(e.message);
+          if (e.message.indexOf('有効期限') !== -1) { setTimeout(restart, 1500); }
+        })
+        .then(function () { busy(btn, false, '登録して続行'); });
+    }
+
+    function finishLogin(r) {
+      localStorage.setItem('admin_auth', JSON.stringify({ username: r.username, token: r.token }));
+      window.location.href = r.must_change_password ? '/admin/password' : '/admin/dashboard';
+    }
+
+    $('loginBtn').addEventListener('click', doLogin);
+    $('codeBtn').addEventListener('click', doCode);
+    $('setupBtn').addEventListener('click', doSetupConfirm);
+    $('toggleRecovery').addEventListener('click', function () { setCodeMode(!state.useRecovery); });
+    $('username').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('password').focus(); });
+    $('password').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+    $('code').addEventListener('keydown', function (e) { if (e.key === 'Enter') doCode(); });
+    $('setupCode').addEventListener('keydown', function (e) { if (e.key === 'Enter') doSetupConfirm(); });
+
+    $('copyRecovery').addEventListener('click', function () {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(state.recovery.join('\n')).then(function () { $('copyRecovery').textContent = 'コピーしました'; });
+      }
     });
-    document.getElementById('username').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') document.getElementById('password').focus();
+    $('downloadRecovery').addEventListener('click', function () {
+      var text = 'ACS FAQ Manager リカバリーコード（ユーザー: ' + state.session.username + '）\r\n'
+        + '各コードは1回のみ使用できます。安全な場所に保管してください。\r\n\r\n' + state.recovery.join('\r\n') + '\r\n';
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      a.download = 'recovery-codes.txt'; a.click();
     });
+    $('savedCheck').addEventListener('change', function () { $('finishBtn').disabled = !this.checked; });
+    $('finishBtn').addEventListener('click', function () { finishLogin(state.session); });
+
+    // 有効期限切れ等でログイン画面に戻された場合のお知らせ
+    try {
+      var n = sessionStorage.getItem('login_notice');
+      if (n) { var el = $('notice'); el.textContent = n; el.style.display = 'block'; sessionStorage.removeItem('login_notice'); }
+    } catch (e) {}
   </script>
 </body>
 </html>

@@ -91,6 +91,7 @@
     footer{background:#fff;border-top:1px solid var(--border);padding:16px 24px;text-align:center;color:var(--muted);font-size:12px;}
     @media(max-width:700px){.ht{display:none;}.grid2{grid-template-columns:1fr;}.bt{width:70px;}}
   </style>
+  <script src="/admin/static/auth.js"></script>
 </head>
 <body>
 <header>
@@ -103,6 +104,7 @@
     <a href="/admin/logs" class="active">ログ閲覧</a>
     <a href="/admin/files">ファイル管理</a>
     <a href="/admin/apikeys">APIキー</a>
+    <a href="/admin/users">管理者管理</a>
   </nav>
   <button class="logout" onclick="logout()">ログアウト</button>
 </header>
@@ -167,7 +169,7 @@
 
   function makeH() {
     var a = JSON.parse(localStorage.getItem('admin_auth'));
-    return 'Basic ' + btoa(a.username + ':' + a.password);
+    return 'Bearer ' + a.token;
   }
 
   /* ---- 状態 ---- */
