@@ -5,11 +5,11 @@
 - æ—¢å­˜ã®é™çš„ãƒ•ã‚¡ã‚¤ãƒ«æ§‹æˆã¨ã®äº’æ›æ€§ç¶­æŒ
 """
 
-from fastapi import FastAPI, Query, HTTPException, Depends, BackgroundTasks, UploadFile, File, Header
+from fastapi import FastAPI, Query, HTTPException, Depends, BackgroundTasks, UploadFile, File, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import auth_utils as au  # 管理画面の多要素認証・パスワードハッシュ等（auth_utils.py）
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
@@ -619,55 +619,28 @@ def parse_logs() -> List[Dict[str, Any]]:
 # èªè¨¼
 # ============================================
 
-security = HTTPBasic()
+def _client_ip(request: Request) -> str:
+    return (request.client.host if request.client else "unknown")
 
-def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    """管理者認証 - users.jsonを参照"""
-    try:
-        # users.jsonを読み込み
-        if not USERS_PATH.exists():
-            print("❌ users.json not found")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-        
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        # ユーザーを検索
-        user = next((u for u in users_data["users"] if u["username"] == credentials.username), None)
-        
-        if not user:
-            print(f"❌ User not found: {credentials.username}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-        
-        # パスワードを確認
-        if user["password"] != credentials.password:
-            print(f"❌ Invalid password for user: {credentials.username}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-        
-        print(f"✅ Authentication successful: {credentials.username}")
-        return credentials.username
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Authentication error: {e}")
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+def verify_admin(authorization: Optional[str] = Header(None)) -> str:
+    """
+    管理者認証（ログイン済みトークン方式）。
+    ログイン（パスワード＋認証アプリのコード）に成功すると発行されるトークンを
+    「Authorization: Bearer <token>」で受け取り、ユーザー名を返す。
+    パスワード変更・MFAリセットが行われたユーザーの古いトークンは無効になる（token_epoch照合）。
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Login required",
+                            headers={"WWW-Authenticate": "Bearer"})
+    payload = au.parse_token(authorization[7:].strip(), "session")
+    if not payload:
+        raise HTTPException(status_code=401, detail="Session expired or invalid",
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = au.find_user(au.load_users(), payload.get("u", ""))
+    if not user or user.get("token_epoch", 1) != payload.get("e"):
+        raise HTTPException(status_code=401, detail="Session expired or invalid",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return user["username"]
 
 # ============================================
 # 外部システム連携API - 認証（APIキー方式）
@@ -875,21 +848,14 @@ def initialize_files():
             print("✅ faq.json created")
         
         # users.json の初期化
+        # 新規環境のみ初期管理者(admin/admin)を作成する。
+        # 初回ログイン時に多要素認証の登録とパスワード変更が必須となる。
         if not USERS_PATH.exists():
             print("📁 Creating users.json...")
-            default_users = {
-                "users": [
-                    {
-                        "username": "admin",
-                        "password": "admin",
-                        "secret_question": "",
-                        "secret_answer": ""
-                    }
-                ]
-            }
-            with open(USERS_PATH, 'w', encoding='utf-8') as f:
-                json.dump(default_users, f, ensure_ascii=False, indent=2)
+            au.save_users({"users": [au.new_user_record("admin", "admin", must_change_password=True)]})
             print("✅ users.json created")
+        # 旧形式（平文パスワード・秘密の質問）を新形式へ移行
+        au.migrate_users_file()
 
         # api_keys.json の初期化（外部システム連携用）
         if not API_KEYS_PATH.exists():
@@ -2552,14 +2518,6 @@ def serve_admin_password():
         return HTMLResponse("<h1>admin password.html not found</h1>", status_code=404)
     return f.read_text(encoding="utf-8")
 
-@app.get("/admin/reset", response_class=HTMLResponse, include_in_schema=False)
-def serve_admin_reset():
-    """管理画面 - パスワード再設定"""
-    f = admin_path / "reset.html"
-    if not f.exists():
-        return HTMLResponse("<h1>admin reset.html not found</h1>", status_code=404)
-    return f.read_text(encoding="utf-8")
-
 @app.get("/admin/apikeys", response_class=HTMLResponse, include_in_schema=False)
 def serve_admin_apikeys():
     """管理画面 - 外部連携APIキー管理"""
@@ -2681,182 +2639,287 @@ async def get_video_ranking(limit: int = 10):
 
 
 # ============================================
-# ユーザー管理API
+# 管理者認証API（パスワード + 認証アプリ(TOTP) による多要素認証）
 # ============================================
+# ログインの流れ:
+#   1) POST /admin/api/auth/login  … ユーザー名+パスワードを確認
+#        MFA登録済み   → status="mfa_required"        (mfa_token を返す)
+#        MFA未登録     → status="mfa_setup_required"  (setup_token を返す)
+#   2a) POST /admin/api/auth/mfa           … 6桁コード or リカバリーコードで本人確認 → session token
+#   2b) POST /admin/api/auth/setup/start   … QRコード/シークレットを発行
+#       POST /admin/api/auth/setup/confirm … コード確認 → MFA有効化 + リカバリーコード発行 + session token
+# 以降の管理API呼び出しは「Authorization: Bearer <session token>」で行う。
 
-@app.get("/admin/api/user", dependencies=[Depends(verify_admin)])
-async def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
-    """現在のユーザー情報を取得"""
-    try:
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        username = credentials.username
-        user = next((u for u in users_data["users"] if u["username"] == username), None)
-        
-        if user:
-            return {
-                "username": user["username"],
-                "has_secret_question": bool(user.get("secret_question"))
-            }
-        
-        raise HTTPException(status_code=404, detail="User not found")
-    except Exception as e:
-        print(f"❌ Get user error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+GENERIC_LOGIN_ERROR = "ユーザー名またはパスワードが正しくありません"
 
-@app.put("/admin/api/user/password", dependencies=[Depends(verify_admin)])
-async def change_password(request: dict, credentials: HTTPBasicCredentials = Depends(security)):
-    """パスワード変更"""
-    print(f"🔐 Password change requested for user: {credentials.username}")
-    
-    try:
-        old_password = request.get("old_password")
-        new_password = request.get("new_password")
-        secret_question = request.get("secret_question", "")
-        secret_answer = request.get("secret_answer", "")
-        
-        if not old_password or not new_password:
-            raise HTTPException(status_code=400, detail="Old and new passwords are required")
-        
-        # ユーザー情報を読み込み
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        # ユーザーを検索
-        user = next((u for u in users_data["users"] if u["username"] == credentials.username), None)
+def _lock_guard(username: str, ip: str):
+    remain = au.lock_remaining(username, ip)
+    if remain > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"ログイン失敗が続いたため一時的にロックしています。約{(remain + 59) // 60}分後に再度お試しください",
+        )
+
+def _session_response(user: dict) -> dict:
+    token = au.issue_token(user["username"], "session", user.get("token_epoch", 1), au.SESSION_TTL_SECONDS)
+    return {
+        "status": "ok",
+        "token": token,
+        "username": user["username"],
+        "must_change_password": bool(user.get("must_change_password")),
+        "recovery_codes_remaining": len(user.get("recovery_codes", [])),
+    }
+
+@app.post("/admin/api/auth/login")
+async def auth_login(body: dict, request: Request):
+    """ステップ1: ユーザー名とパスワードの確認"""
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+    ip = _client_ip(request)
+    _lock_guard(username, ip)
+
+    data = au.load_users()
+    user = au.find_user(data, username)
+    # ユーザーが存在しなくても同じ時間をかけて照合する（存在有無を推測されないため）
+    stored = user.get("password_hash", "") if user else au._DUMMY_HASH
+    ok = au.verify_password_hash(stored, password) and user is not None
+    if not ok:
+        au.record_failure(username, ip)
+        print(f"❌ Login failed (password): user={username!r} ip={ip}")
+        raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERROR)
+
+    epoch = user.get("token_epoch", 1)
+    if user.get("mfa_enabled"):
+        return {"status": "mfa_required",
+                "mfa_token": au.issue_token(username, "mfa", epoch, au.PENDING_TTL_SECONDS)}
+    return {"status": "mfa_setup_required",
+            "setup_token": au.issue_token(username, "setup", epoch, au.PENDING_TTL_SECONDS)}
+
+@app.post("/admin/api/auth/mfa")
+async def auth_mfa(body: dict, request: Request):
+    """ステップ2: 認証アプリの6桁コード（またはリカバリーコード）で本人確認"""
+    ip = _client_ip(request)
+    payload = au.parse_token(str(body.get("mfa_token", "")), "mfa")
+    if not payload:
+        raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+    username = payload["u"]
+    _lock_guard(username, ip)
+
+    code = str(body.get("code", "")).strip()
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
+        if not user or user.get("token_epoch", 1) != payload.get("e") or not user.get("mfa_enabled"):
+            raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+
+        verified = False
+        if code.replace(" ", "").isdigit():
+            step = au.verify_totp(user["totp_secret"], code, user.get("totp_last_step", 0))
+            if step is not None:
+                user["totp_last_step"] = step   # 同じコードの再利用を防ぐ
+                verified = True
+        elif code:
+            verified = au.consume_recovery_code(user, code)   # リカバリーコードは1回限り
+            if verified:
+                print(f"⚠️ Recovery code used: user={username} (残り{len(user['recovery_codes'])}件)")
+
+        if not verified:
+            au.record_failure(username, ip)
+            print(f"❌ Login failed (MFA code): user={username!r} ip={ip}")
+            raise HTTPException(status_code=401, detail="認証コードが正しくありません")
+
+        au.save_users(data)
+        au.record_success(username)
+        print(f"✅ Login success: {username}")
+        return _session_response(user)
+
+@app.post("/admin/api/auth/setup/start")
+async def auth_setup_start(body: dict):
+    """MFA登録: シークレットとQRコードを発行（まだ有効化はしない）"""
+    payload = au.parse_token(str(body.get("setup_token", "")), "setup")
+    if not payload:
+        raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, payload["u"])
+        if not user or user.get("token_epoch", 1) != payload.get("e") or user.get("mfa_enabled"):
+            raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+        secret = au.new_totp_secret()
+        user["pending_totp_secret"] = secret
+        au.save_users(data)
+    uri = au.totp_uri(secret, user["username"])
+    return {"secret": secret, "otpauth_uri": uri, "qr_svg": au.qr_svg(uri)}
+
+@app.post("/admin/api/auth/setup/confirm")
+async def auth_setup_confirm(body: dict, request: Request):
+    """MFA登録: アプリに表示された6桁コードで確認し、多要素認証を有効化する"""
+    ip = _client_ip(request)
+    payload = au.parse_token(str(body.get("setup_token", "")), "setup")
+    if not payload:
+        raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+    username = payload["u"]
+    _lock_guard(username, ip)
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
+        if (not user or user.get("token_epoch", 1) != payload.get("e")
+                or user.get("mfa_enabled") or not user.get("pending_totp_secret")):
+            raise HTTPException(status_code=401, detail="確認の有効期限が切れました。最初からログインし直してください")
+        step = au.verify_totp(user["pending_totp_secret"], str(body.get("code", "")))
+        if step is None:
+            au.record_failure(username, ip)
+            raise HTTPException(status_code=400, detail="認証コードが正しくありません。アプリに表示されている最新の6桁を入力してください")
+
+        plain_codes, hashed_codes = au.generate_recovery_codes()
+        user["totp_secret"] = user.pop("pending_totp_secret")
+        user["pending_totp_secret"] = ""
+        user["mfa_enabled"] = True
+        user["totp_last_step"] = step
+        user["recovery_codes"] = hashed_codes
+        au.save_users(data)
+        au.record_success(username)
+        print(f"✅ MFA enabled: {username}")
+        res = _session_response(user)
+        res["recovery_codes"] = plain_codes   # 平文はこの1回のみ表示
+        return res
+
+@app.get("/admin/api/user")
+async def get_current_user(username: str = Depends(verify_admin)):
+    """ログイン中のユーザー情報"""
+    user = au.find_user(au.load_users(), username)
+    return {
+        "username": username,
+        "mfa_enabled": bool(user.get("mfa_enabled")),
+        "recovery_codes_remaining": len(user.get("recovery_codes", [])),
+        "must_change_password": bool(user.get("must_change_password")),
+    }
+
+@app.put("/admin/api/user/password")
+async def change_password(body: dict, username: str = Depends(verify_admin)):
+    """パスワード変更（本人）。変更後は全端末のログインが無効になるため、再ログインが必要。"""
+    old_password = str(body.get("old_password", ""))
+    new_password = str(body.get("new_password", ""))
+    if not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="現在のパスワードと新しいパスワードを入力してください")
+    problem = au.check_password_policy(new_password, username)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
+        if not au.verify_password_hash(user.get("password_hash", ""), old_password):
+            raise HTTPException(status_code=400, detail="現在のパスワードが正しくありません")
+        user["password_hash"] = au.hash_password(new_password)
+        user["must_change_password"] = False
+        user["token_epoch"] = user.get("token_epoch", 1) + 1
+        au.save_users(data)
+    print(f"✅ Password changed: {username}")
+    return {"status": "ok", "message": "Password changed successfully"}
+
+@app.post("/admin/api/user/recovery-codes/regenerate")
+async def regenerate_recovery_codes(body: dict, username: str = Depends(verify_admin)):
+    """リカバリーコードの再発行（現在の認証コードで本人確認。旧コードは全て無効になる）"""
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
+        step = au.verify_totp(user.get("totp_secret", ""), str(body.get("code", "")), user.get("totp_last_step", 0))
+        if step is None:
+            raise HTTPException(status_code=400, detail="認証コードが正しくありません")
+        plain_codes, hashed_codes = au.generate_recovery_codes()
+        user["recovery_codes"] = hashed_codes
+        user["totp_last_step"] = step
+        au.save_users(data)
+    return {"status": "ok", "recovery_codes": plain_codes}
+
+# ---- 管理者アカウント管理（管理者全員が操作可能） ----
+
+@app.get("/admin/api/users")
+async def list_admin_users(me: str = Depends(verify_admin)):
+    users = au.load_users()["users"]
+    return {"me": me, "users": [
+        {
+            "username": u["username"],
+            "mfa_enabled": bool(u.get("mfa_enabled")),
+            "must_change_password": bool(u.get("must_change_password")),
+            "recovery_codes_remaining": len(u.get("recovery_codes", [])),
+            "created_at": u.get("created_at", ""),
+        } for u in users
+    ]}
+
+@app.post("/admin/api/users")
+async def create_admin_user(body: dict, me: str = Depends(verify_admin)):
+    """管理者を追加（初期パスワードを設定。本人は初回ログインでMFA登録とパスワード変更を行う）"""
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+    if not username or len(username) > 50 or any(c in username for c in ' /\\:'):
+        raise HTTPException(status_code=400, detail="ユーザー名は50文字以内で、空白や / \\ : は使えません")
+    problem = au.check_password_policy(password, username)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    with au._users_lock:
+        data = au.load_users()
+        if au.find_user(data, username):
+            raise HTTPException(status_code=400, detail=f"ユーザー '{username}' は既に存在します")
+        data["users"].append(au.new_user_record(username, password, must_change_password=True))
+        au.save_users(data)
+    print(f"👤 Admin user created: {username} (by {me})")
+    return {"status": "created", "username": username}
+
+@app.delete("/admin/api/users/{username}")
+async def delete_admin_user(username: str, me: str = Depends(verify_admin)):
+    if username == me:
+        raise HTTPException(status_code=400, detail="自分自身は削除できません")
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # 現在のパスワードを確認
-        if user["password"] != old_password:
-            raise HTTPException(status_code=400, detail="Current password is incorrect")
-        
-        # パスワードと秘密の質問を更新
-        user["password"] = new_password
-        if secret_question:
-            user["secret_question"] = secret_question
-            user["secret_answer"] = secret_answer
-        
-        # 保存
-        with open(USERS_PATH, 'w', encoding='utf-8') as f:
-            json.dump(users_data, f, ensure_ascii=False, indent=2)
-        
-        print(f"✅ Password changed successfully for user: {credentials.username}")
-        return {"status": "ok", "message": "Password changed successfully"}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Password change error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        data["users"].remove(user)
+        au.save_users(data)
+    print(f"🗑️ Admin user deleted: {username} (by {me})")
+    return {"status": "deleted", "username": username}
 
-@app.post("/api/user/verify-answer")
-async def verify_secret_answer(request: dict):
-    """秘密の質問の回答を確認"""
-    try:
-        username = request.get("username")
-        secret_answer = request.get("secret_answer")
-        
-        if not username or not secret_answer:
-            raise HTTPException(status_code=400, detail="Username and answer are required")
-        
-        # ユーザー情報を読み込み
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        # ユーザーを検索
-        user = next((u for u in users_data["users"] if u["username"] == username), None)
+@app.post("/admin/api/users/{username}/reset-mfa")
+async def reset_admin_mfa(username: str, me: str = Depends(verify_admin)):
+    """スマホ紛失・機種変更時: 対象ユーザーのMFAを解除（次回ログイン時に再登録）。ログイン中の端末も無効化。"""
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # 秘密の質問が設定されているか確認
-        if not user.get("secret_question"):
-            raise HTTPException(status_code=400, detail="Secret question not set")
-        
-        # 回答を確認
-        if user["secret_answer"] == secret_answer:
-            return {
-                "status": "ok",
-                "message": "Answer verified",
-                "secret_question": user["secret_question"]
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Incorrect answer")
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Verify answer error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        user.update({"mfa_enabled": False, "totp_secret": "", "pending_totp_secret": "",
+                     "totp_last_step": 0, "recovery_codes": [],
+                     "token_epoch": user.get("token_epoch", 1) + 1})
+        au.save_users(data)
+    print(f"🔄 MFA reset: {username} (by {me})")
+    return {"status": "ok", "username": username}
 
-@app.post("/api/user/reset-password")
-async def reset_password(request: dict):
-    """パスワード再設定"""
-    print(f"🔐 Password reset requested")
-    
-    try:
-        username = request.get("username")
-        secret_answer = request.get("secret_answer")
-        new_password = request.get("new_password")
-        
-        if not username or not secret_answer or not new_password:
-            raise HTTPException(status_code=400, detail="All fields are required")
-        
-        # ユーザー情報を読み込み
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        # ユーザーを検索
-        user = next((u for u in users_data["users"] if u["username"] == username), None)
+@app.post("/admin/api/users/{username}/reset-password")
+async def reset_admin_password(username: str, body: dict, me: str = Depends(verify_admin)):
+    """パスワード忘れ時: 一時パスワードを設定（本人は次回ログイン後に変更）。"""
+    password = str(body.get("new_password", ""))
+    problem = au.check_password_policy(password, username)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    with au._users_lock:
+        data = au.load_users()
+        user = au.find_user(data, username)
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # 秘密の質問が設定されているか確認
-        if not user.get("secret_question"):
-            raise HTTPException(status_code=400, detail="Secret question not set")
-        
-        # 回答を確認
-        if user["secret_answer"] != secret_answer:
-            raise HTTPException(status_code=400, detail="Incorrect answer")
-        
-        # パスワードを更新
-        user["password"] = new_password
-        
-        # 保存
-        with open(USERS_PATH, 'w', encoding='utf-8') as f:
-            json.dump(users_data, f, ensure_ascii=False, indent=2)
-        
-        print(f"✅ Password reset successfully for user: {username}")
-        return {"status": "ok", "message": "Password reset successfully"}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Password reset error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        user["password_hash"] = au.hash_password(password)
+        user["must_change_password"] = True
+        user["token_epoch"] = user.get("token_epoch", 1) + 1
+        au.save_users(data)
+    print(f"🔄 Password reset: {username} (by {me})")
+    return {"status": "ok", "username": username}
 
-@app.get("/api/user/secret-question")
-async def get_secret_question(username: str):
-    """秘密の質問を取得"""
-    try:
-        with open(USERS_PATH, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
-        
-        user = next((u for u in users_data["users"] if u["username"] == username), None)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if not user.get("secret_question"):
-            raise HTTPException(status_code=400, detail="Secret question not set")
-        
-        return {"secret_question": user["secret_question"]}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Get secret question error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
+def serve_admin_users():
+    """管理画面 - 管理者アカウント管理"""
+    f = admin_path / "users.html"
+    if not f.exists():
+        return HTMLResponse("<h1>admin users.html not found</h1>", status_code=404)
+    return f.read_text(encoding="utf-8")
 
 @app.get("/api/synonyms")
 async def get_synonyms():
