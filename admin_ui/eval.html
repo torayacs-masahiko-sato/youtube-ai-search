@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>精度計測 - ACS FAQ Manager</title>
+  <style>
+    :root {
+      --brand:#0066cc;--brand-dark:#004fa3;--brand-light:#e8f0fb;
+      --bg:#f6f7fb;--white:#fff;--text:#111827;--muted:#6b7280;
+      --border:#e5e7eb;--shadow:0 1px 3px rgba(0,0,0,0.08);
+      --faq:#10b981;--video:#f59e0b;
+    }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Meiryo",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;font-size:14px;}
+    header{background:#001529;color:#fff;padding:0 24px;display:flex;justify-content:space-between;align-items:center;height:56px;box-shadow:0 2px 8px rgba(0,0,0,0.15);gap:12px;flex-shrink:0;}
+    .hl{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+    .ht{font-size:16px;font-weight:700;}
+    nav{display:flex;gap:4px;overflow-x:auto;}
+    nav a{color:rgba(255,255,255,0.8);text-decoration:none;padding:7px 12px;border-radius:6px;font-size:13px;white-space:nowrap;}
+    nav a:hover,nav a.active{background:rgba(255,255,255,0.12);color:#fff;}
+    .logout{background:none;border:none;color:rgba(255,255,255,0.8);cursor:pointer;padding:7px 12px;font-size:13px;border-radius:6px;font-family:inherit;white-space:nowrap;}
+    .logout:hover{background:rgba(255,255,255,0.1);color:#fff;}
+    main{flex:1;max-width:1200px;margin:0 auto;width:100%;padding:24px;}
+    .sec-title{font-size:18px;font-weight:700;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid var(--brand);}
+
+    /* ツールバー */
+    .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
+    .tt{font-size:20px;font-weight:700;flex:1;}
+    select{padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;background:#fff;}
+    .btn{display:inline-block;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid var(--border);background:#fff;color:var(--text);}
+    .btn:hover{border-color:var(--brand);color:var(--brand);}
+
+    /* 統計カード */
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px;}
+    .stat{background:#fff;border-radius:12px;border:1px solid var(--border);padding:16px 20px;box-shadow:var(--shadow);}
+    .sl{font-size:12px;color:var(--muted);margin-bottom:4px;}
+    .sv{font-size:26px;font-weight:700;}
+
+    /* タブ */
+    .tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;}
+    .tab{padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:none;color:var(--muted);border-bottom:3px solid transparent;margin-bottom:-2px;}
+    .tab.active{color:var(--brand);border-bottom-color:var(--brand);}
+
+    /* グリッド */
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+    .card{background:#fff;border-radius:12px;box-shadow:var(--shadow);border:1px solid var(--border);padding:20px;}
+    .ct{font-size:15px;font-weight:700;margin-bottom:14px;}
+
+    /* テーブル */
+    table{width:100%;border-collapse:collapse;}
+    th{padding:9px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border);background:#f9fafb;}
+    td{padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px;}
+    tr:last-child td{border-bottom:none;}
+    tr:hover td{background:#fafafa;}
+
+    /* 精度計測 */
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .row label{font-size:12px;color:var(--muted);}
+    input[type=text],input[type=number]{padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;}
+    .btn.pri{background:var(--brand);border-color:var(--brand);color:#fff;}
+    .btn.pri:hover{background:var(--brand-dark);color:#fff;}
+    .btn.sm{padding:4px 10px;font-size:12px;}
+    .btn:disabled{opacity:.5;cursor:not-allowed;}
+    .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px;}
+    .kv dt{color:var(--muted);} .kv dd{font-weight:600;word-break:break-all;}
+    .tag{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;}
+    .tag.on{background:#d1fae5;color:#065f46;} .tag.off{background:#f3f4f6;color:#4b5563;} .tag.ng{background:#fee2e2;color:#b91c1c;}
+    .help{font-size:12px;color:var(--muted);line-height:1.7;}
+    .mt{margin-top:20px;}
+    .metric{font-size:24px;font-weight:700;}
+    .d-up{color:#059669;font-size:12px;font-weight:600;} .d-dn{color:#dc2626;font-size:12px;font-weight:600;}
+    .rank-ng{color:#dc2626;font-weight:700;} .rank-ok{color:#059669;font-weight:700;}
+    .scroll{max-height:420px;overflow:auto;}
+    td.q{max-width:240px;word-break:break-all;} td.t{max-width:300px;font-size:12px;color:#374151;}
+    /* 状態 */
+    .loading{text-align:center;padding:60px;color:var(--muted);}
+    .sp{display:inline-block;width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--brand);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    .empty{text-align:center;padding:60px;color:var(--muted);}
+    .errbox{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px 18px;color:#dc2626;margin-bottom:16px;}
+    footer{background:#fff;border-top:1px solid var(--border);padding:16px 24px;text-align:center;color:var(--muted);font-size:12px;}
+    @media(max-width:700px){.ht{display:none;}.grid2{grid-template-columns:1fr;}.bt{width:70px;}}
+  </style>
+  <script src="/admin/static/auth.js"></script>
+</head>
+<body>
+<header>
+  <div class="hl"><span style="font-size:20px">🔧</span><span class="ht">ACS FAQ Manager</span></div>
+  <nav>
+    <a href="/admin/dashboard">ダッシュボード</a>
+    <a href="/admin/videos">動画データ</a>
+    <a href="/admin/synonyms">同義語</a>
+    <a href="/admin/faq">FAQ編集</a>
+    <a href="/admin/logs">ログ閲覧</a>
+    <a href="/admin/eval" class="active">精度計測</a>
+    <a href="/admin/files">ファイル管理</a>
+    <a href="/admin/apikeys">APIキー</a>
+    <a href="/admin/users">管理者管理</a>
+  </nav>
+  <button class="logout" onclick="logout()">ログアウト</button>
+</header>
+
+<main>
+  <div class="sec-title">🎯 検索精度の計測</div>
+  <p class="help" style="margin-bottom:16px">
+    「この検索語なら、この結果が正解」という問題集で、いまの検索が正解を何位に出せるかを測ります。
+    問題集は<b>クリックログ（お客様が実際に選んだ結果）</b>から自動で作られ、下の「手動の問題」で追加もできます。
+    <b>本番の設定は変えずに</b>「日本語解析あり」などの方式を試せるので、数字で良くなったことを確かめてから本番に適用してください。
+  </p>
+  <div id="errBox" class="errbox" style="display:none"></div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="ct">⚙️ いまの検索方式（本番）</div>
+      <div id="statusBox"><div class="loading" style="padding:20px"><span class="sp"></span></div></div>
+    </div>
+    <div class="card">
+      <div class="ct">▶ 計測する</div>
+      <div class="row" style="margin-bottom:10px">
+        <label>メモ</label><input type="text" id="runLabel" placeholder="例: 日本語解析の効果確認" style="flex:1;min-width:160px">
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <label>問題集</label>
+        <select id="runSource"><option value="all">自動＋手動</option><option value="auto">自動（クリックログ）のみ</option><option value="manual">手動のみ</option></select>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <label>日本語解析</label>
+        <select id="runJa"><option value="">本番と同じ</option><option value="1">ありで試す</option><option value="0">なしで試す</option></select>
+        <label>しきい値</label><input type="number" id="runTh" step="0.01" min="0" max="1" placeholder="本番と同じ" style="width:110px">
+      </div>
+      <div class="row">
+        <button class="btn pri" id="runBtn" onclick="runEval()">計測する</button>
+        <button class="btn" id="cmpBtn" onclick="runCompare()" title="同じ問題集で2回計測して並べます">日本語解析 なし／あり を比較</button>
+      </div>
+      <div id="runMsg" class="help" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div id="resultArea" class="mt"></div>
+
+  <div class="card mt">
+    <div class="ct">📜 計測の履歴 <span class="help" style="font-weight:400">（2つ選ぶと差を比較できます）</span></div>
+    <div id="histBox"><div class="loading" style="padding:20px"><span class="sp"></span></div></div>
+  </div>
+
+  <div class="card mt">
+    <div class="ct">📝 手動の問題</div>
+    <p class="help" style="margin-bottom:10px">クリックがまだ少ない大事な質問や、新しく追加したFAQが正しく出るかの確認に使います。正解IDは FAQ ID（例: FAQ-0012）または 動画ID（YouTubeの11文字、例: dQw4w9WgXcQ）。複数ある場合はカンマ区切り。</p>
+    <div class="row" style="margin-bottom:12px">
+      <select id="cType"><option value="faq">FAQ</option><option value="video">動画</option></select>
+      <input type="text" id="cQuery" placeholder="検索語（例: 印刷できない）" style="flex:1;min-width:160px">
+      <input type="text" id="cExp" placeholder="正解ID（例: FAQ-0012）" style="flex:1;min-width:140px">
+      <button class="btn pri" onclick="addCase()">追加</button>
+    </div>
+    <div id="caseBox"></div>
+    <div id="autoBox" class="help" style="margin-top:12px"></div>
+  </div>
+</main>
+<footer>Copyright &copy; 2026 Toray Advanced Computer Solution, Inc.</footer>
+<script>
+  var auth = localStorage.getItem('admin_auth');
+  if (!auth) { window.location.href = '/admin'; }
+  function logout() { localStorage.removeItem('admin_auth'); window.location.href = '/admin'; }
+  function makeH() { var a = JSON.parse(localStorage.getItem('admin_auth')); return 'Bearer ' + a.token; }
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function showErr(m){ var e=document.getElementById('errBox'); e.textContent='⚠️ '+m; e.style.display=''; window.scrollTo(0,0); }
+  function clearErr(){ document.getElementById('errBox').style.display='none'; }
+
+  // 共通のAPI呼び出し（401ならログイン画面へ。エラー時はサーバーの説明文を表示）
+  function api(method, url, body) {
+    var opt = { method: method, headers: { 'Authorization': makeH() } };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    return fetch(url, opt).then(function(r){
+      if (r.status === 401) { window.location.href = '/admin'; throw new Error('ログインが必要です'); }
+      return r.json().catch(function(){ return {}; }).then(function(j){
+        if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+        return j;
+      });
+    });
+  }
+
+  var STATUS = null, HIST = [], selected = [];
+
+  /* ---------- 現在の方式 ---------- */
+  function loadStatus() {
+    return api('GET', '/admin/api/eval/status').then(function(d){
+      STATUS = d; var s = d.settings;
+      var ja = !s.ja_tokenizer_available ? '<span class="tag ng">利用不可</span> <span class="help">'+esc((d.ja_tokenizer||{}).error||'')+'</span>'
+             : (s.ja_tokenizer_enabled ? '<span class="tag on">あり</span>' : '<span class="tag off">なし（従来の文字一致）</span>');
+      document.getElementById('statusBox').innerHTML =
+        '<dl class="kv">'
+        + '<dt>検索モデル</dt><dd>'+esc(s.model)+(s.query_prefix?' <span class="help">（e5形式: query:/passage: 付き）</span>':'')+'</dd>'
+        + '<dt>日本語解析</dt><dd>'+ja+'</dd>'
+        + '<dt>しきい値</dt><dd>'+esc(s.similarity_threshold)+' <span class="help">（意味の近さがこれ未満の結果は表示しない）</span></dd>'
+        + '<dt>重み</dt><dd>意味 '+esc(s.semantic_weight)+' ／ キーワード '+esc(s.title_weight)+'</dd>'
+        + '<dt>データ</dt><dd>FAQ '+d.faqs+'件 ／ 動画 '+d.videos+'本（'+d.video_chunks+'区切り）</dd>'
+        + '<dt>メモリ使用量</dt><dd>'+(d.memory_mb==null?'-':d.memory_mb+' MB')+' <span class="help">（Standardプランの上限 2048 MB）</span></dd>'
+        + (d.model_load_seconds!=null?'<dt>モデル読込時間</dt><dd>'+d.model_load_seconds+' 秒</dd>':'')
+        + '</dl>'
+        + '<div class="row mt" style="margin-top:14px">'
+        + (s.ja_tokenizer_available ? '<button class="btn sm" onclick="setJa('+(!s.ja_tokenizer_enabled)+')">日本語解析を本番で'+(s.ja_tokenizer_enabled?'OFF':'ON')+'にする</button>' : '')
+        + '</div>';
+    }).catch(function(e){ document.getElementById('statusBox').innerHTML=''; showErr('状態の取得に失敗: '+e.message); });
+  }
+
+  // 本番設定の変更（他の設定値は残したまま、その項目だけ書き換える）
+  function patchConfig(patch, msg) {
+    if (!confirm(msg)) return;
+    api('GET', '/admin/api/config').then(function(cfg){
+      for (var k in patch) cfg[k] = patch[k];
+      return api('PUT', '/admin/api/config', cfg);
+    }).then(function(){ alert('本番の設定を変更しました。次の検索から反映されます。'); loadStatus(); })
+      .catch(function(e){ showErr('設定の変更に失敗: '+e.message); });
+  }
+  function setJa(on) {
+    patchConfig({ ja_tokenizer_enabled: on }, on
+      ? '日本語解析を本番で「あり」にします。お客様の検索結果の並び順が変わります。よろしいですか？'
+      : '日本語解析を本番で「なし」（従来方式）に戻します。よろしいですか？');
+  }
+  function applyTh(v) {
+    patchConfig({ similarity_threshold: v }, 'しきい値を '+v+' に変更します（お客様の検索結果の件数が変わります）。よろしいですか？');
+  }
+
+  /* ---------- 計測 ---------- */
+  function setBusy(b, msg) {
+    document.getElementById('runBtn').disabled = b; document.getElementById('cmpBtn').disabled = b;
+    document.getElementById('runMsg').innerHTML = b ? '<span class="sp" style="width:16px;height:16px;border-width:2px"></span>'+esc(msg||'計測中…（問題数によって数十秒かかります）') : (msg||'');
+  }
+  function runBody(jaOverride, label) {
+    var o = {}, ja = jaOverride != null ? jaOverride : document.getElementById('runJa').value, th = document.getElementById('runTh').value;
+    if (ja !== '') o.ja_tokenizer_enabled = ja === '1';
+    if (th !== '') o.similarity_threshold = parseFloat(th);
+    return { label: label || document.getElementById('runLabel').value, source: document.getElementById('runSource').value, overrides: o, save: true };
+  }
+  function runEval() {
+    clearErr(); setBusy(true);
+    api('POST', '/admin/api/eval/run', runBody()).then(function(r){
+      setBusy(false, '✅ 完了（'+r.seconds+'秒）'); renderResult([r]); loadHistory();
+    }).catch(function(e){ setBusy(false); showErr('計測に失敗: '+e.message); });
+  }
+  function runCompare() {
+    clearErr(); var base = document.getElementById('runLabel').value || '比較';
+    setBusy(true, '1/2 日本語解析なしで計測中…');
+    var a;
+    api('POST', '/admin/api/eval/run', runBody('0', base+'（日本語解析なし）')).then(function(r){
+      a = r; setBusy(true, '2/2 日本語解析ありで計測中…');
+      return api('POST', '/admin/api/eval/run', runBody('1', base+'（日本語解析あり）'));
+    }).then(function(b){ setBusy(false, '✅ 比較完了'); renderResult([a, b]); loadHistory(); })
+      .catch(function(e){ setBusy(false); showErr('計測に失敗: '+e.message); if (a) renderResult([a]); });
+  }
+
+  var LABELS = [['hit1','1位正解率','%'],['hit3','上位3件正解率','%'],['hit10','上位10件正解率','%'],['mrr','MRR（順位の良さ）',''],['miss','見つからない率','%'],['avg_ms','平均応答時間','ms']];
+  function diffHtml(cur, base, key) {
+    if (base == null || cur == null) return '';
+    var d = Math.round((cur - base) * 1000) / 1000; if (key !== 'mrr') d = Math.round((cur - base) * 10) / 10;
+    if (d === 0) return ' <span class="help">±0</span>';
+    var better = (key === 'miss' || key === 'avg_ms') ? d < 0 : d > 0;
+    return ' <span class="'+(better?'d-up':'d-dn')+'">'+(d>0?'+':'')+d+'</span>';
+  }
+  function settingLine(r) {
+    var s = r.settings;
+    return esc(s.model.split('/').pop())+' ／ 日本語解析 '+(s.ja_tokenizer_enabled?'あり':'なし')+' ／ しきい値 '+esc(s.similarity_threshold);
+  }
+  // runs: [結果] または [比較元, 比較先]
+  function renderResult(runs) {
+    var cur = runs[runs.length-1], base = runs.length > 1 ? runs[0] : null, html = '';
+    html += '<div class="card"><div class="ct">📊 計測結果'+(base?'（比較）':'')+'</div>';
+    if (base) html += '<div class="help" style="margin-bottom:10px">比較元: '+esc(base.label||'')+' — '+settingLine(base)+'<br>比較先: '+esc(cur.label||'')+' — '+settingLine(cur)+'<br>緑＝良くなった／赤＝悪くなった</div>';
+    else html += '<div class="help" style="margin-bottom:10px">'+settingLine(cur)+'（問題数 FAQ '+cur.metrics.faq.cases+'・動画 '+cur.metrics.video.cases+'）</div>';
+    html += '<div class="grid2">';
+    [['faq','📝 FAQ'],['video','🎬 動画']].forEach(function(tp){
+      var m = cur.metrics[tp[0]], b = base ? base.metrics[tp[0]] : null;
+      html += '<div><div style="font-weight:700;margin-bottom:8px">'+tp[1]+'（'+m.cases+'問）</div>';
+      if (!m.cases) { html += '<div class="help">問題がありません</div></div>'; return; }
+      html += '<table><tbody>';
+      LABELS.forEach(function(l){
+        html += '<tr><td>'+l[1]+'</td><td style="text-align:right"><b>'+(m[l[0]]==null?'-':m[l[0]]+l[2])+'</b>'+(b?diffHtml(m[l[0]], b[l[0]], l[0]):'')+'</td></tr>';
+      });
+      html += '<tr><td>しきい値で隠れた正解</td><td style="text-align:right">'+m.cut_by_threshold+'問</td></tr>';
+      html += '</tbody></table>';
+      // しきい値の目安: 正解の意味スコアの下位10%点
+      if (m.correct_semantic_p10 != null) {
+        var rec = Math.max(0, Math.floor((m.correct_semantic_p10 - 0.02) * 100) / 100);
+        html += '<div class="help" style="margin-top:8px">正解の「意味の近さ」: 中央値 '+m.correct_semantic_p50+' ／ 下位10% '+m.correct_semantic_p10
+          + '<br>しきい値の目安: <b>'+rec+'</b> 以下（正解の約9割が表示対象に残る）。※しきい値はFAQ・動画共通なので、両方の目安のうち<b>低い方</b>を選んでください'
+          + ' <button class="btn sm" onclick="applyTh('+rec+')">本番に適用</button></div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    // うまくいかなかった問題
+    var bad = (cur.details||[]).filter(function(d){ return d.rank == null || d.rank > 3; });
+    html += '<div class="ct mt">⚠️ 正解が上位3件に入らなかった問題（'+bad.length+'件）</div>';
+    if (!bad.length) html += '<div class="help">すべて上位3件以内でした 👍</div>';
+    else {
+      html += '<div class="help" style="margin-bottom:6px">FAQの追加・キーワードや同義語の登録、動画タイトルの見直しの候補です。「自動」はクリックログ由来（数字はクリック数）。</div>';
+      html += '<div class="scroll"><table><thead><tr><th>種別</th><th>検索語</th><th>正解</th><th>正解の順位</th><th>実際の1位</th></tr></thead><tbody>';
+      bad.forEach(function(d){
+        html += '<tr><td>'+(d.type==='faq'?'FAQ':'動画')+'<div class="help">'+(d.source==='manual'?'手動':'自動'+(d.clicks?'・'+d.clicks:''))+'</div></td>'
+          + '<td class="q">'+esc(d.query)+'</td>'
+          + '<td class="t">'+esc(d.expected_title||'')+'<div class="help">'+esc(d.expected.join(', '))+'</div></td>'
+          + '<td>'+(d.rank==null?'<span class="rank-ng">出ない</span>':'<span class="rank-ng">'+d.rank+'位</span>')+'<div class="help">全'+d.total+'件</div></td>'
+          + '<td class="t">'+esc(d.top1||'（結果なし）')+'</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+    document.getElementById('resultArea').innerHTML = html;
+  }
+
+  /* ---------- 履歴 ---------- */
+  function fmtDate(iso) { var d = new Date(iso); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }
+  function loadHistory() {
+    return api('GET', '/admin/api/eval/history').then(function(d){
+      HIST = d.history; selected = [];
+      if (!HIST.length) { document.getElementById('histBox').innerHTML = '<div class="empty" style="padding:20px">まだ計測していません。最初に「計測する」で今の精度を記録しておくと、変更後と比べられます。</div>'; return; }
+      var h = '<div class="row" style="margin-bottom:8px"><button class="btn sm" onclick="compareSel()">選んだ2件を比較</button></div><div class="scroll"><table><thead><tr><th></th><th>日時</th><th>メモ</th><th>方式</th><th>FAQ 1位/上位3/MRR</th><th>動画 1位/上位3/MRR</th><th>メモリ</th><th></th></tr></thead><tbody>';
+      HIST.forEach(function(r){
+        var f = r.metrics.faq, v = r.metrics.video;
+        function trio(m){ return m.cases ? (m.hit1+'% / '+m.hit3+'% / '+m.mrr) : '-'; }
+        h += '<tr><td><input type="checkbox" onchange="toggleSel(\''+r.id+'\', this.checked)"></td><td>'+fmtDate(r.created_at)+'</td><td>'+esc(r.label||'')+'</td>'
+          + '<td class="t">'+settingLine(r)+'</td><td>'+trio(f)+'</td><td>'+trio(v)+'</td><td>'+(r.memory_mb==null?'-':r.memory_mb+'MB')+'</td>'
+          + '<td style="white-space:nowrap"><button class="btn sm" onclick="showHist(\''+r.id+'\')">詳細</button> <button class="btn sm" onclick="delHist(\''+r.id+'\')">削除</button></td></tr>';
+      });
+      document.getElementById('histBox').innerHTML = h + '</tbody></table></div>';
+    }).catch(function(e){ showErr('履歴の取得に失敗: '+e.message); });
+  }
+  function toggleSel(id, on) { selected = selected.filter(function(x){ return x !== id; }); if (on) selected.push(id); }
+  function compareSel() {
+    if (selected.length !== 2) { alert('比較する計測結果を2つ選んでください'); return; }
+    // 古い方を比較元にする
+    var ids = selected.slice().sort();
+    Promise.all(ids.map(function(id){ return api('GET', '/admin/api/eval/history/'+id); }))
+      .then(function(rs){ rs.sort(function(a,b){ return a.created_at < b.created_at ? -1 : 1; }); renderResult(rs); window.scrollTo(0, document.getElementById('resultArea').offsetTop - 10); })
+      .catch(function(e){ showErr(e.message); });
+  }
+  function showHist(id) { api('GET', '/admin/api/eval/history/'+id).then(function(r){ renderResult([r]); window.scrollTo(0, document.getElementById('resultArea').offsetTop - 10); }).catch(function(e){ showErr(e.message); }); }
+  function delHist(id) { if (!confirm('この計測結果を削除しますか？')) return; api('DELETE', '/admin/api/eval/history/'+id).then(loadHistory).catch(function(e){ showErr(e.message); }); }
+
+  /* ---------- 手動の問題 ---------- */
+  function loadCases() {
+    return api('GET', '/admin/api/eval/cases').then(function(d){
+      var m = d.manual;
+      if (!m.length) document.getElementById('caseBox').innerHTML = '<div class="help">手動の問題はまだありません。</div>';
+      else {
+        var h = '<table><thead><tr><th>種別</th><th>検索語</th><th>正解ID</th><th></th></tr></thead><tbody>';
+        m.forEach(function(c){ h += '<tr><td>'+(c.type==='faq'?'FAQ':'動画')+'</td><td>'+esc(c.query)+'</td><td>'+esc((c.expected||[]).join(', '))+'</td><td><button class="btn sm" onclick="delCase(\''+esc(c.id)+'\')">削除</button></td></tr>'; });
+        document.getElementById('caseBox').innerHTML = h + '</tbody></table>';
+      }
+      document.getElementById('autoBox').innerHTML = '🤖 クリックログから自動作成される問題: FAQ <b>'+d.auto.faq+'</b>問 ／ 動画 <b>'+d.auto.video+'</b>問'
+        + (d.skipped.deleted_target ? '（正解のFAQ・動画が削除済みのため除外: '+d.skipped.deleted_target+'件）' : '')
+        + '<br>クリック数の多い検索語から、種別ごとに最大300問を使います。';
+    }).catch(function(e){ showErr('問題集の取得に失敗: '+e.message); });
+  }
+  function addCase() {
+    clearErr();
+    var body = { type: document.getElementById('cType').value, query: document.getElementById('cQuery').value.trim(), expected: document.getElementById('cExp').value.trim() };
+    if (!body.query || !body.expected) { showErr('検索語と正解IDを入力してください'); return; }
+    api('POST', '/admin/api/eval/cases', body).then(function(){ document.getElementById('cQuery').value=''; document.getElementById('cExp').value=''; loadCases(); })
+      .catch(function(e){ showErr('追加できませんでした: '+e.message); });
+  }
+  function delCase(id) { if (!confirm('この問題を削除しますか？')) return; api('DELETE', '/admin/api/eval/cases/'+encodeURIComponent(id)).then(loadCases).catch(function(e){ showErr(e.message); }); }
+
+  loadStatus(); loadHistory(); loadCases();
+</script>
+</body>
+</html>
