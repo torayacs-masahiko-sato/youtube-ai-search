@@ -1156,6 +1156,8 @@
         var val = input.value.trim();
         if (val) {
           doSearch(val);
+          // Enterは「入力確定」の合図なので、結果が出次第すぐ検索実行ログを確定する
+          if (currentSearch) { currentSearch.flushOnReady = true; if (currentSearch.ready) flushSearchEvent(); }
         }
       }
     });
@@ -1229,6 +1231,7 @@
     if (!q) { showEmpty(); return; }
     if (q === lastQuery) return;
     lastQuery = q;
+    var mySid = beginSearch(q);
 
     faqState = { offset: 0, items: [], total: 0 };
     vidState = { offset: 0, items: [], total: 0 };
@@ -1245,14 +1248,14 @@
     if (faqSearchEnabled) {
       faqPromise = fetch('/faq/search?query=' + encodeURIComponent(expanded) + '&offset=0&limit=50&paged=1&language=' + currentLanguage)
         .then(function(r) { return r.json(); })
-        .catch(function() { return { items: [], total_visible: 0 }; });
+        .catch(function() { return { items: [], total_visible: 0, _err: true }; });
     } else {
-      faqPromise = Promise.resolve({ items: [], total_visible: 0 });
+      faqPromise = Promise.resolve({ items: [], total_visible: 0, _off: true });
     }
 
     var vidPromise = fetch('/search?query=' + encodeURIComponent(expanded) + '&offset=0&limit=50&paged=1&language=' + currentLanguage)
       .then(function(r) { return r.json(); })
-      .catch(function() { return { items: [], total_visible: 0 }; });
+      .catch(function() { return { items: [], total_visible: 0, _err: true }; });
 
     Promise.all([faqPromise, vidPromise]).then(function(results) {
       var faqRes = results[0];
@@ -1269,6 +1272,10 @@
       vidState.total = vidRes.total_visible || vidState.items.length;
 
       renderResults();
+      // 検索実行ログ用: 通信エラー時は記録しない。FAQ検索OFFの時は件数null
+      if (!faqRes._err && !vidRes._err) {
+        registerSearchEvent(mySid, faqRes._off ? null : faqState.total, vidState.total);
+      }
     }).catch(function(error) {
       console.error('❌ Search error:', error);
       showEmpty();
@@ -1528,7 +1535,80 @@
   // 同一セッションで同じアイテムのログを1回だけ送信するためのSet
   var loggedItems = new Set();
 
+  // ---- 検索実行ログ（検索の質の分析用） ----
+  // なぜ「落ち着いてから」送るか: 入力のたびに検索が走るため（300msデバウンス）、
+  // 打鍵ごとに記録すると「あ」「あい」…のような途中経過が大量に混ざる。
+  // 入力が2秒止まる / Enterを押す / 結果をクリックする / ページを離れる のいずれかで1回だけ送る。
+  var SEARCH_SETTLE_MS = 2000;
+  var currentSearch = null;
+
+  function newSid() {
+    try {
+      if (window.crypto && crypto.getRandomValues) {
+        var a = new Uint8Array(12); crypto.getRandomValues(a);
+        return Array.prototype.map.call(a, function(b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+      }
+    } catch (e) {}
+    return (Date.now().toString(16) + Math.random().toString(16).slice(2, 12)).slice(0, 24);
+  }
+
+  function beginSearch(q) {
+    flushSearchEvent();   // 前の検索がまだ未送信なら先に確定させる
+    currentSearch = { sid: newSid(), query: q, faq: null, video: 0, ready: false, sent: false,
+                      clicked: {}, timer: null };
+    return currentSearch.sid;
+  }
+
+  function registerSearchEvent(sid, faqCount, videoCount) {
+    var cs = currentSearch;
+    if (!cs || cs.sid !== sid) return;   // 古い検索の結果が遅れて届いた場合は無視
+    cs.faq = faqCount; cs.video = videoCount; cs.ready = true;
+    clearTimeout(cs.timer);
+    if (cs.flushOnReady) { flushSearchEvent(); return; }
+    cs.timer = setTimeout(flushSearchEvent, SEARCH_SETTLE_MS);
+  }
+
+  function sendEvent(url, payload, useBeacon) {
+    var body = JSON.stringify(payload);
+    try {
+      if (useBeacon && navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+        return;
+      }
+    } catch (e) {}
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true })
+      .catch(function() {});
+  }
+
+  function flushSearchEvent(useBeacon) {
+    var cs = currentSearch;
+    if (!cs || cs.sent || !cs.ready) return;
+    clearTimeout(cs.timer);
+    cs.sent = true;
+    sendEvent('/api/search_event', {
+      sid: cs.sid, query: cs.query, faq_count: cs.faq, video_count: cs.video, language: currentLanguage
+    }, useBeacon === true);
+    // 送信前にクリックされていた分をまとめて送る
+    Object.keys(cs.clicked).forEach(function(t) {
+      sendEvent('/api/search_event/click', { sid: cs.sid, type: t }, useBeacon === true);
+    });
+  }
+
+  function markSearchClick(type) {
+    var cs = currentSearch;
+    if (!cs || cs.clicked[type]) return;
+    cs.clicked[type] = true;
+    if (!cs.sent) { flushSearchEvent(); return; }   // flush内でclickedも送られる
+    sendEvent('/api/search_event/click', { sid: cs.sid, type: type }, false);
+  }
+
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') flushSearchEvent(true);
+  });
+  window.addEventListener('pagehide', function() { flushSearchEvent(true); });
+
   function logClick(query, resultType, resultId) {
+    markSearchClick(resultType === 'video' ? 'video' : 'faq');   // 検索実行ログ側のクリック記録（重複防止より前に実行）
     // 同じ結果への重複ログを防止
     var key = resultType + ':' + resultId;
     if (loggedItems.has(key)) return;
