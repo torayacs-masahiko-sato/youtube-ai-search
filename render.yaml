@@ -3,7 +3,7 @@ services:
     name: youtube-ai-search
     env: python
     region: oregon
-    plan: starter          # Persistent Diskは有料プランが必要
+    plan: standard         # Standard（1 CPU / 2GB）。Persistent Diskは有料プランが必要
     buildCommand: |
       pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT

@@ -21,7 +21,10 @@ import pathlib
 import csv
 import secrets
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import threading
+import io
+import time
 from typing import List, Dict, Any, Optional
 import re
 import numpy as np
@@ -74,6 +77,7 @@ USERS_PATH       = DATA_DIR / "users.json"
 SEARCH_LOG_PATH  = DATA_DIR / "search_logs.csv"
 API_KEYS_PATH    = DATA_DIR / "api_keys.json"      # 外部システム連携用APIキー
 FAQ_HISTORY_PATH = DATA_DIR / "faq_history.json"   # FAQ変更履歴
+SEARCH_EVENTS_PATH = DATA_DIR / "search_events.jsonl"  # 検索実行ログ（追記専用）
 
 # アップロードファイルパス（Disk上に保持）
 FILES_DIR        = DATA_DIR / "files"
@@ -2636,6 +2640,378 @@ async def get_video_ranking(limit: int = 10):
                 "click_count": count
             })
     return {"ranking": ranking}
+
+
+# ============================================
+# 検索実行ログ（検索の質の分析用）
+# ============================================
+# 既存のクリックログ(search_logs.csv)は「クリックされた時だけ」の記録のため、
+# 「ヒットなしだった検索」「結果が出たのにクリックされなかった検索」が分かりません。
+# そこで検索が落ち着いた時点（入力が止まった / Enter / 結果クリック前）で1件記録します。
+#
+# 形式: search_events.jsonl（1行1イベントの追記専用。書き込み途中で壊れても他の行に影響しない）
+#   検索:   {"t": ISO日時(UTC), "sid": 検索ID, "q": キーワード, "f": FAQヒット数|null, "v": 動画ヒット数, "lang": "ja"}
+#   クリック: {"t": ISO日時(UTC), "sid": 検索ID, "c": "faq"|"video"}
+# 検索IDで検索とクリックを結び付けて集計する。
+# 注意: 個人情報の入力を避ける注意書きは画面側にあるが、キーワードは200文字までに切り詰めて保存する。
+
+JST = timezone(timedelta(hours=9))   # 日本時間（夏時間なし）
+_events_lock = threading.Lock()
+_event_rate: Dict[str, List[float]] = {}
+EVENT_RATE_LIMIT_PER_MIN = 120       # 同一IPからの記録上限（悪意ある大量送信でファイルが膨らむのを防ぐ）
+_SID_RE = re.compile(r"^[A-Za-z0-9_-]{8,40}$")
+
+def _event_rate_ok(ip: str) -> bool:
+    now = time.time()
+    hits = [t for t in _event_rate.get(ip, []) if now - t < 60]
+    if len(hits) >= EVENT_RATE_LIMIT_PER_MIN:
+        _event_rate[ip] = hits
+        return False
+    hits.append(now)
+    _event_rate[ip] = hits
+    if len(_event_rate) > 5000:   # メモリ肥大の防止
+        _event_rate.clear()
+    return True
+
+def _append_event(obj: dict) -> None:
+    line = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    with _events_lock:
+        with open(SEARCH_EVENTS_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+def _to_count(v) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        return max(0, min(int(v), 100000))
+    except Exception:
+        return None
+
+@app.post("/api/search_event")
+async def log_search_event(body: dict, request: Request):
+    """検索実行の記録（お客様画面から、検索が落ち着いた時に1回だけ呼ばれる）"""
+    try:
+        sid = str(body.get("sid") or "")
+        query = re.sub(r"\s+", " ", str(body.get("query") or "")).strip()[:200]
+        ip = request.client.host if request.client else "unknown"
+        if not _SID_RE.match(sid) or not query:
+            return {"status": "ignored"}
+        if not _event_rate_ok(ip):
+            return {"status": "rate_limited"}
+        _append_event({
+            "t": datetime.now(timezone.utc).isoformat(),
+            "sid": sid, "q": query,
+            "f": _to_count(body.get("faq_count")),     # FAQ検索が無効の時はnull
+            "v": _to_count(body.get("video_count")),
+            "lang": str(body.get("language") or "")[:5],
+        })
+    except Exception as e:
+        print(f"⚠️ Search event write failed: {e}")
+    return {"status": "logged"}
+
+@app.post("/api/search_event/click")
+async def log_search_event_click(body: dict, request: Request):
+    """その検索でFAQ/動画の結果がクリックされたことを記録（検索IDごと・種別ごとに1回）"""
+    try:
+        sid = str(body.get("sid") or "")
+        kind = str(body.get("type") or "")
+        ip = request.client.host if request.client else "unknown"
+        if not _SID_RE.match(sid) or kind not in ("faq", "video"):
+            return {"status": "ignored"}
+        if not _event_rate_ok(ip):
+            return {"status": "rate_limited"}
+        _append_event({"t": datetime.now(timezone.utc).isoformat(), "sid": sid, "c": kind})
+    except Exception as e:
+        print(f"⚠️ Search click event write failed: {e}")
+    return {"status": "logged"}
+
+
+# ============================================
+# 検索分析（管理画面「ログ閲覧」→「検索分析」）
+# ============================================
+
+def _read_search_searches() -> List[Dict[str, Any]]:
+    """search_events.jsonl を読み、検索1件=1レコードにまとめる（クリックは検索IDで結合）。"""
+    if not SEARCH_EVENTS_PATH.exists():
+        return []
+    searches: Dict[str, Dict[str, Any]] = {}
+    clicks: Dict[str, set] = {}
+    bad = 0
+    try:
+        with open(SEARCH_EVENTS_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                    sid = e["sid"]
+                    if "q" in e:
+                        if sid in searches:     # 同じ検索IDの重複は最初の1件のみ採用
+                            continue
+                        dt = datetime.fromisoformat(str(e["t"]).replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        searches[sid] = {
+                            "sid": sid, "dt": dt.astimezone(JST), "query": e["q"],
+                            "faq": e.get("f"), "video": e.get("v"), "lang": e.get("lang", ""),
+                        }
+                    elif "c" in e:
+                        clicks.setdefault(sid, set()).add(e["c"])
+                except Exception:
+                    bad += 1
+    except Exception as ex:
+        print(f"❌ Failed to read search events: {ex}")
+        return []
+    if bad:
+        print(f"⚠️ search_events.jsonl: skipped {bad} bad lines")
+    for sid, s in searches.items():
+        s["clicks"] = clicks.get(sid, set())
+    return list(searches.values())
+
+def _parse_ymd(s: str, name: str):
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(400, f"{name} は YYYY-MM-DD 形式で指定してください")
+
+def _resolve_range(date_from: str, date_to: str):
+    today = datetime.now(JST).date()
+    d_to = _parse_ymd(date_to, "to") if date_to else today
+    d_from = _parse_ymd(date_from, "from") if date_from else d_to - timedelta(days=29)
+    if d_from > d_to:
+        raise HTTPException(400, "開始日が終了日より後になっています")
+    if (d_to - d_from).days > 730:
+        raise HTTPException(400, "期間は最大2年（730日）までです")
+    return d_from, d_to
+
+def _kpi(searches: List[Dict[str, Any]]) -> Dict[str, Any]:
+    n = len(searches)
+    clicked = sum(1 for s in searches if s["clicks"])
+    faq_measured = [s for s in searches if s["faq"] is not None]
+    zero_faq = sum(1 for s in faq_measured if s["faq"] == 0)
+    zero_video = sum(1 for s in searches if s["video"] == 0)
+    # 「どちらも0件」= 動画0件 かつ（FAQ0件 または FAQ検索が無効）
+    zero_both = sum(1 for s in searches if s["video"] == 0 and (s["faq"] in (0, None)))
+    uniq = len({normalize_text(s["query"]) for s in searches})
+    def rate(a, b):
+        return round(a / b * 100, 1) if b else None
+    return {
+        "searches": n, "unique_queries": uniq, "clicked": clicked,
+        "click_rate": rate(clicked, n),
+        "zero_faq": zero_faq, "zero_faq_rate": rate(zero_faq, len(faq_measured)),
+        "zero_video": zero_video, "zero_video_rate": rate(zero_video, n),
+        "zero_both": zero_both, "zero_both_rate": rate(zero_both, n),
+    }
+
+def _in_range(dt: datetime, d_from, d_to) -> bool:
+    return d_from <= dt.date() <= d_to
+
+async def build_search_analytics(date_from: str = "", date_to: str = "") -> Dict[str, Any]:
+    d_from, d_to = _resolve_range(date_from, date_to)
+    span = (d_to - d_from).days + 1
+    p_to = d_from - timedelta(days=1)
+    p_from = p_to - timedelta(days=span - 1)
+
+    all_searches = _read_search_searches()
+    cur = [s for s in all_searches if _in_range(s["dt"], d_from, d_to)]
+    prev = [s for s in all_searches if _in_range(s["dt"], p_from, p_to)]
+    data_start = min((s["dt"] for s in all_searches), default=None)
+
+    # --- 日別 / 時間帯別 / 曜日別 ---
+    daily_map = {d_from + timedelta(days=i): {"searches": 0, "clicked": 0, "zero_both": 0} for i in range(span)}
+    hourly = [0] * 24
+    weekday = [0] * 7   # 0=月曜
+    for s in cur:
+        d = daily_map[s["dt"].date()]
+        d["searches"] += 1
+        if s["clicks"]:
+            d["clicked"] += 1
+        if s["video"] == 0 and s["faq"] in (0, None):
+            d["zero_both"] += 1
+        hourly[s["dt"].hour] += 1
+        weekday[s["dt"].weekday()] += 1
+    daily = [{"day": k.isoformat(), **v} for k, v in sorted(daily_map.items())]
+
+    # --- キーワード単位の集計 ---
+    groups: Dict[str, Dict[str, Any]] = {}
+    for s in sorted(cur, key=lambda x: x["dt"]):
+        key = normalize_text(s["query"])
+        g = groups.setdefault(key, {
+            "query": s["query"], "count": 0, "clicked": 0, "faq_zero": 0, "video_zero": 0,
+            "both_zero": 0, "faq_hits": 0, "faq_n": 0, "video_hits": 0, "last_seen": ""})
+        g["query"] = s["query"]                    # 直近の表記を表示
+        g["count"] += 1
+        g["last_seen"] = s["dt"].strftime("%Y-%m-%d %H:%M")
+        g["video_hits"] += s["video"] or 0
+        if s["clicks"]:
+            g["clicked"] += 1
+        if s["faq"] is not None:
+            g["faq_n"] += 1
+            g["faq_hits"] += s["faq"]
+            if s["faq"] == 0:
+                g["faq_zero"] += 1
+        if s["video"] == 0:
+            g["video_zero"] += 1
+        if s["video"] == 0 and s["faq"] in (0, None):
+            g["both_zero"] += 1
+
+    def brief(g):
+        return {
+            "query": g["query"], "count": g["count"], "clicked": g["clicked"],
+            "click_rate": round(g["clicked"] / g["count"] * 100, 1),
+            "faq_zero": g["faq_zero"], "video_zero": g["video_zero"], "both_zero": g["both_zero"],
+            "avg_faq_hits": round(g["faq_hits"] / g["faq_n"], 1) if g["faq_n"] else None,
+            "avg_video_hits": round(g["video_hits"] / g["count"], 1),
+            "last_seen": g["last_seen"],
+        }
+    rows = [brief(g) for g in groups.values()]
+    top_queries = sorted(rows, key=lambda r: (-r["count"], r["query"]))[:50]
+    zero_hit = sorted([r for r in rows if r["faq_zero"] or r["video_zero"]],
+                      key=lambda r: (-(r["both_zero"] or 0), -r["count"], r["query"]))[:200]
+    # クリックなし: ヒットはあったのにクリックされなかった検索が1回以上あるキーワード
+    no_click = []
+    for g in groups.values():
+        no_click_n = g["count"] - g["clicked"] - g["both_zero"]
+        if no_click_n > 0:
+            r = brief(g)
+            r["no_click"] = no_click_n
+            no_click.append(r)
+    no_click = sorted(no_click, key=lambda r: (-r["no_click"], r["query"]))[:200]
+
+    # --- 期間内のクリックランキング（既存クリックログ） ---
+    await state.ensure_faq_loaded()
+    await state.ensure_video_loaded()
+    faq_counter: Counter = Counter()
+    vid_counter: Counter = Counter()
+    for r in parse_logs():
+        dt = r["dt"]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if not _in_range(dt.astimezone(JST), d_from, d_to):
+            continue
+        if r.get("result_type") == "faq" and r.get("result_id"):
+            faq_counter[r["result_id"]] += 1
+        elif r.get("result_type") == "video" and r.get("result_id"):
+            vid_counter[r["result_id"]] += 1
+    faq_by_id = {i.get("id"): i for i in state.faq_items_flat}
+    vid_by_id = {v.get("video_id"): v for v in state.videos}
+    faq_ranking = [{"id": k, "question": faq_by_id[k].get("question", ""), "category": faq_by_id[k].get("category", ""),
+                    "click_count": c} for k, c in faq_counter.most_common(30) if k in faq_by_id][:10]
+    video_ranking = [{"video_id": k, "title": vid_by_id[k].get("title", ""), "click_count": c}
+                     for k, c in vid_counter.most_common(30) if k in vid_by_id][:10]
+
+    return {
+        "from": d_from.isoformat(), "to": d_to.isoformat(), "days": span,
+        "prev_range": {"from": p_from.isoformat(), "to": p_to.isoformat()},
+        "has_data": bool(all_searches),
+        "data_start": data_start.strftime("%Y-%m-%d") if data_start else None,
+        "kpi": _kpi(cur), "prev": _kpi(prev) if prev else None,
+        "daily": daily, "hourly": hourly, "weekday": weekday,
+        "top_queries": top_queries, "zero_hit": zero_hit, "no_click": no_click,
+        "faq_ranking": faq_ranking, "video_ranking": video_ranking,
+    }
+
+@app.get("/admin/api/analytics/overview", dependencies=[Depends(verify_admin)])
+async def analytics_overview(date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to")):
+    """検索分析の集計（期間指定。省略時は直近30日）"""
+    return await build_search_analytics(date_from, date_to)
+
+def build_report_xlsx(a: Dict[str, Any]) -> bytes:
+    """検索分析をExcelレポート（複数シート）にして返す。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    head_fill = PatternFill("solid", fgColor="0066CC")
+    head_font = Font(bold=True, color="FFFFFF")
+
+    def sheet(title, headers, rows, widths):
+        ws = wb.create_sheet(title)
+        ws.append(headers)
+        for c in ws[1]:
+            c.fill, c.font = head_fill, head_font
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        for r in rows:
+            ws.append(r)
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+        return ws
+
+    # --- サマリー ---
+    ws = wb.active
+    ws.title = "サマリー"
+    ws["A1"] = "サポート検索 分析レポート"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = f"対象期間: {a['from']} 〜 {a['to']}（{a['days']}日間）"
+    ws["A3"] = f"前期間: {a['prev_range']['from']} 〜 {a['prev_range']['to']}"
+    ws["A4"] = f"作成日時: {datetime.now(JST).strftime('%Y-%m-%d %H:%M')} (JST)"
+    ws.append([])
+    ws.append(["指標", "今期間", "前期間", "増減"])
+    for c in ws[6]:
+        c.fill, c.font = head_fill, head_font
+    k, p = a["kpi"], a["prev"] or {}
+    items = [("検索回数", "searches", ""), ("ユニークキーワード数", "unique_queries", ""),
+             ("結果をクリックした検索", "clicked", ""), ("クリック率(%)", "click_rate", "%"),
+             ("FAQ 0件の検索", "zero_faq", ""), ("FAQ 0件率(%)", "zero_faq_rate", "%"),
+             ("動画 0件の検索", "zero_video", ""), ("動画 0件率(%)", "zero_video_rate", "%"),
+             ("FAQ・動画とも0件の検索", "zero_both", ""), ("両方0件率(%)", "zero_both_rate", "%")]
+    for label, key, _ in items:
+        cur_v, prev_v = k.get(key), p.get(key)
+        diff = (round(cur_v - prev_v, 1) if isinstance(cur_v, (int, float)) and isinstance(prev_v, (int, float)) else "")
+        ws.append([label, cur_v if cur_v is not None else "-", prev_v if prev_v is not None else "-", diff])
+    ws.column_dimensions["A"].width = 32
+    for col in "BCD":
+        ws.column_dimensions[col].width = 14
+    ws.append([])
+    ws.append(["※「ヒットなし」「クリックなし」の分析は、検索実行ログの記録開始日以降のデータが対象です。"])
+    if a.get("data_start"):
+        ws.append([f"検索実行ログの記録開始日: {a['data_start']}"])
+
+    sheet("日別推移", ["日付", "検索回数", "クリックあり", "両方0件"],
+          [[d["day"], d["searches"], d["clicked"], d["zero_both"]] for d in a["daily"]], [14, 12, 14, 12])
+    wd = ["月", "火", "水", "木", "金", "土", "日"]
+    ws2 = sheet("時間帯・曜日別", ["時間帯(JST)", "検索回数"], [[f"{h:02d}時台", n] for h, n in enumerate(a["hourly"])], [14, 12])
+    ws2["D1"], ws2["E1"] = "曜日", "検索回数"
+    for c in (ws2["D1"], ws2["E1"]):
+        c.fill, c.font = head_fill, head_font
+    for i, n in enumerate(a["weekday"]):
+        ws2.cell(row=i + 2, column=4, value=wd[i])
+        ws2.cell(row=i + 2, column=5, value=n)
+    sheet("人気キーワードTOP50", ["キーワード", "検索回数", "クリックあり", "クリック率(%)", "平均FAQ件数", "平均動画件数"],
+          [[r["query"], r["count"], r["clicked"], r["click_rate"], r["avg_faq_hits"] if r["avg_faq_hits"] is not None else "-", r["avg_video_hits"]]
+           for r in a["top_queries"]], [40, 12, 14, 14, 14, 14])
+    sheet("ヒットなしキーワード", ["キーワード", "検索回数", "FAQ0件", "動画0件", "両方0件", "最終検索日時"],
+          [[r["query"], r["count"], r["faq_zero"], r["video_zero"], r["both_zero"], r["last_seen"]] for r in a["zero_hit"]],
+          [40, 12, 10, 10, 10, 20])
+    sheet("クリックなしキーワード", ["キーワード", "クリックなしの検索回数", "検索回数", "平均FAQ件数", "平均動画件数", "最終検索日時"],
+          [[r["query"], r["no_click"], r["count"], r["avg_faq_hits"] if r["avg_faq_hits"] is not None else "-", r["avg_video_hits"], r["last_seen"]]
+           for r in a["no_click"]], [40, 20, 12, 14, 14, 20])
+    sheet("FAQクリックランキング", ["順位", "FAQ ID", "質問", "カテゴリ", "クリック数"],
+          [[i + 1, r["id"], r["question"], r["category"], r["click_count"]] for i, r in enumerate(a["faq_ranking"])], [8, 18, 60, 18, 12])
+    sheet("動画クリックランキング", ["順位", "動画ID", "タイトル", "クリック数"],
+          [[i + 1, r["video_id"], r["title"], r["click_count"]] for i, r in enumerate(a["video_ranking"])], [8, 16, 70, 12])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+@app.get("/admin/api/analytics/report.xlsx", dependencies=[Depends(verify_admin)])
+async def analytics_report_xlsx(date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to")):
+    """検索分析のExcelレポートをダウンロード"""
+    a = await build_search_analytics(date_from, date_to)
+    try:
+        data = build_report_xlsx(a)
+    except ImportError:
+        raise HTTPException(501, "Excel出力ライブラリ(openpyxl)が未導入です。requirements.txt を確認してください")
+    fname = f"search_report_{a['from'].replace('-', '')}-{a['to'].replace('-', '')}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # ============================================
