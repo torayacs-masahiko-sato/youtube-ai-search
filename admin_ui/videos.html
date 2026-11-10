@@ -495,7 +495,7 @@
       box.className = 'pv-res info'; box.textContent = '検索中...';
       try {
         var lang = v.language || 'ja';
-        var r = await fetch('/search?query=' + encodeURIComponent(q) + '&offset=0&limit=100&paged=1&language=' + encodeURIComponent(lang));
+        var r = await fetch('/search?query=' + encodeURIComponent(q) + '&offset=0&limit=50&paged=1&language=' + encodeURIComponent(lang));
         if (!r.ok) throw new Error('HTTP ' + r.status);
         var d = await r.json();
         var items = d.items || [];
@@ -513,7 +513,9 @@
                + '（意味 ' + Number(it.semantic_score || 0).toFixed(3) + ' / タイトル一致 ' + Number(it.title_score || 0).toFixed(3) + '）' : '');
         } else {
           box.className = 'pv-res ng';
-          box.innerHTML = '❌ この動画はヒットしませんでした（他の動画 ' + total + '件がヒット）。<br>'
+          box.innerHTML = (total > items.length
+              ? '❌ 上位' + items.length + '件以内には入りませんでした（全' + total + '件ヒット）。<br>'
+              : '❌ この動画はヒットしませんでした（他の動画 ' + total + '件がヒット）。<br>')
             + '<span style="font-size:12px">タイトル・説明文にキーワードを足す／同義語を登録する と出やすくなります。</span>';
         }
         if (items.length) {
