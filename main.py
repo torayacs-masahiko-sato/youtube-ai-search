@@ -23,6 +23,8 @@ import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 import threading
+import asyncio
+import ja_text  # 日本語解析（形態素解析）。未インストールでも起動できる作り（ja_text.py参照）
 import io
 import time
 from typing import List, Dict, Any, Optional
@@ -38,6 +40,14 @@ import unicodedata
 APP_TITLE = "ã‚µãƒãƒ¼ãƒˆæ¤œç´¢ï¼ˆå‹•ç”» + FAQï¼‰æœ€é©åŒ–ç‰ˆ"
 DEFAULT_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL_NAME)
+
+# --- 埋め込みモデルごとの前処理 ---
+# multilingual-e5 系は「検索語の先頭に query: 」「文書の先頭に passage: 」を付ける前提で学習されているため、
+# 付けないと精度が大きく落ちる。現行モデル(MiniLM)は付けない（＝従来と完全に同じ動き）。
+# 他のモデルで必要な場合は環境変数 EMBEDDING_QUERY_PREFIX / EMBEDDING_PASSAGE_PREFIX で上書きできる。
+_IS_E5 = "e5" in EMBEDDING_MODEL.lower().rsplit("/", 1)[-1]
+QUERY_PREFIX = os.getenv("EMBEDDING_QUERY_PREFIX", "query: " if _IS_E5 else "")
+PASSAGE_PREFIX = os.getenv("EMBEDDING_PASSAGE_PREFIX", "passage: " if _IS_E5 else "")
 
 DEFAULT_TOP_K = 10
 DEFAULT_PAGE_LIMIT = 10
@@ -78,6 +88,8 @@ SEARCH_LOG_PATH  = DATA_DIR / "search_logs.csv"
 API_KEYS_PATH    = DATA_DIR / "api_keys.json"      # 外部システム連携用APIキー
 FAQ_HISTORY_PATH = DATA_DIR / "faq_history.json"   # FAQ変更履歴
 SEARCH_EVENTS_PATH = DATA_DIR / "search_events.jsonl"  # 検索実行ログ（追記専用）
+EVAL_CASES_PATH = DATA_DIR / "eval_cases.json"        # 精度計測: 手動で登録したテスト問題
+EVAL_HISTORY_PATH = DATA_DIR / "eval_history.json"    # 精度計測: 計測結果の履歴
 
 # アップロードファイルパス（Disk上に保持）
 FILES_DIR        = DATA_DIR / "files"
@@ -90,8 +102,11 @@ FILES_OTHER      = FILES_DIR / "other"
 # data.jsonの内容が変わらない限り、起動のたびに重いembedding計算を
 # 繰り返さずに済むよう、チャンクのベクトルをファイルとして保存しておく。
 CACHE_DIR                  = DATA_DIR / "cache"
-VIDEO_EMBEDDINGS_CACHE_PATH = CACHE_DIR / "video_embeddings.npy"
-VIDEO_CHUNK_META_CACHE_PATH = CACHE_DIR / "video_chunks_meta.json"
+# モデルごとにキャッシュファイルを分ける（モデルを切り替えて戻した時に再計算不要にするため）。
+# 現行モデルは従来どおりのファイル名（既存キャッシュをそのまま使う）。
+_MODEL_SUFFIX = "" if EMBEDDING_MODEL == DEFAULT_MODEL_NAME else "__" + re.sub(r"[^A-Za-z0-9_.-]+", "_", EMBEDDING_MODEL)
+VIDEO_EMBEDDINGS_CACHE_PATH = CACHE_DIR / f"video_embeddings{_MODEL_SUFFIX}.npy"
+VIDEO_CHUNK_META_CACHE_PATH = CACHE_DIR / f"video_chunks_meta{_MODEL_SUFFIX}.json"
 
 # 静的ファイルパス（コードと同梱、デプロイ毎にリセットされる）
 frontend_path = BASE_DIR / "frontend"
@@ -124,19 +139,50 @@ class AppState:
         self.video_loaded = False
         self.faq_loaded = False
         self.model_loaded = False
+        self.model_load_seconds: Optional[float] = None
         
+    # ------------------------------------------------------------
+    # 読み込み処理（モデル・動画・FAQ）
+    # なぜ別スレッドか: モデルの読み込みや埋め込み計算は数十秒〜数分かかる（1CPU・モデル切替直後）。
+    # 本体の処理（イベントループ）で実行すると、その間ヘルスチェックや他のお客様の検索まで止まるため、
+    # 別スレッドで実行し、待っている検索は完了を待つだけにする。同時に2回読み込まないようロックする。
+    # ------------------------------------------------------------
+    _load_lock = threading.RLock()
+
+    def _load_model_sync(self):
+        with self._load_lock:
+            if not self.model_loaded:
+                t0 = time.time()
+                print(f"🔄 Loading model: {EMBEDDING_MODEL} (query prefix={QUERY_PREFIX!r}, passage prefix={PASSAGE_PREFIX!r})")
+                self.model = SentenceTransformer(EMBEDDING_MODEL)
+                self.model_loaded = True
+                self.model_load_seconds = round(time.time() - t0, 1)
+                print(f"✅ Model loaded ({self.model_load_seconds}s)")
+
     async def ensure_model_loaded(self):
-        """ãƒ¢ãƒ‡ãƒ«ã®é…å»¶ãƒ­ãƒ¼ãƒ‰"""
         if not self.model_loaded:
-            print(f"ðŸ”„ Loading model: {EMBEDDING_MODEL}")
-            self.model = SentenceTransformer(EMBEDDING_MODEL)
-            self.model_loaded = True
-            print("âœ… Model loaded")
-    
+            await asyncio.to_thread(self._load_model_sync)
+
+    def _load_video_sync(self):
+        with self._load_lock:
+            self._load_video_locked()
+
     async def ensure_video_loaded(self):
-        """動画データの遅延ロード（embeddingキャッシュ対応）"""
         if not self.video_loaded:
-            await self.ensure_model_loaded()
+            await asyncio.to_thread(self._load_video_sync)
+
+    def _load_faq_sync(self):
+        with self._load_lock:
+            self._load_faq_locked()
+
+    async def ensure_faq_loaded(self):
+        if not self.faq_loaded:
+            await asyncio.to_thread(self._load_faq_sync)
+
+    def _load_video_locked(self):
+        """動画データの遅延ロード（embeddingキャッシュ対応）※ロック取得済みで呼ぶこと"""
+        if not self.video_loaded:
+            self._load_model_sync()
             print("🔄 Loading video data...")
             
             # データ読み込み
@@ -166,7 +212,8 @@ class AppState:
                     model_match = cache_meta.get("model") == EMBEDDING_MODEL
                     chunk_settings_match = (
                         cache_meta.get("chunk_max_chars") == VIDEO_CHUNK_MAX_CHARS and
-                        cache_meta.get("chunk_overlap") == VIDEO_CHUNK_OVERLAP
+                        cache_meta.get("chunk_overlap") == VIDEO_CHUNK_OVERLAP and
+                        cache_meta.get("passage_prefix", "") == PASSAGE_PREFIX
                     )
                     
                     if hash_match and model_match and chunk_settings_match:
@@ -218,7 +265,7 @@ class AppState:
                 # embedding計算（ここが最も重い処理）
                 if self.text_corpus:
                     self.video_embeddings = self.model.encode(
-                        self.text_corpus, 
+                        [PASSAGE_PREFIX + t for t in self.text_corpus] if PASSAGE_PREFIX else self.text_corpus,
                         show_progress_bar=False,
                         convert_to_numpy=True,
                         batch_size=64
@@ -235,6 +282,7 @@ class AppState:
                                 "model": EMBEDDING_MODEL,
                                 "chunk_max_chars": VIDEO_CHUNK_MAX_CHARS,
                                 "chunk_overlap": VIDEO_CHUNK_OVERLAP,
+                                "passage_prefix": PASSAGE_PREFIX,
                                 "text_corpus": self.text_corpus,
                                 "video_chunk_map": self.video_chunk_map,
                                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -251,10 +299,10 @@ class AppState:
             self.video_loaded = True
             print(f"✅ Video data loaded: {len(self.videos)} videos, {len(self.text_corpus)} chunks")
     
-    async def ensure_faq_loaded(self):
-        """FAQãƒ‡ãƒ¼ã‚¿ã®é…å»¶ãƒ­ãƒ¼ãƒ‰"""
+    def _load_faq_locked(self):
+        # FAQデータの遅延ロード ※ロック取得済みで呼ぶこと
         if not self.faq_loaded:
-            await self.ensure_model_loaded()
+            self._load_model_sync()
             print("ðŸ”„ Loading FAQ data...")
             
             if FAQ_PATH.exists():
@@ -343,7 +391,7 @@ class AppState:
             # FAISS インデックス構築
             if self.faq_corpus:
                 self.faq_embeddings = self.model.encode(
-                    self.faq_corpus,
+                    [PASSAGE_PREFIX + t for t in self.faq_corpus] if PASSAGE_PREFIX else self.faq_corpus,
                     show_progress_bar=False,
                     convert_to_numpy=True
                 )
@@ -522,7 +570,28 @@ def title_match_score(query: str, title: str) -> float:
         bigram_score = 0.0
 
     return max(word_score, bigram_score)
-def faq_keyword_match_score(query: str, item: Dict[str, Any]) -> float:
+def keyword_match_score(query: str, text: str, use_ja: bool = False) -> float:
+    """キーワード一致度（0.0〜1.0）。
+    use_ja=False: 従来の title_match_score と完全に同じ。
+    use_ja=True : 日本語解析（単語単位の一致率）を主に、文字bi-gramを補助に使う。
+                  例「プリンタ 印刷できない」→ 語「プリンター」「印刷」がいくつ含まれるか。
+                  bi-gramだけだと「印刷」と無関係な「刷で」等の一致でも点が入るため、それを抑える。"""
+    base = title_match_score(query, text)
+    if not use_ja or base >= 1.0 or not query or not text:
+        return base
+    cov = ja_text.token_coverage(query, text)
+    if cov is None:          # 内容語が取れない・解析不可 → 従来どおり
+        return base
+    q = normalize_text(query)
+    t = normalize_text(text)
+    words = q.split()
+    word_score = (sum(1 for w in words if w and w in t) / len(words)) if len(words) > 1 else 0.0
+    bigrams = _char_bigrams(q.replace(" ", ""))
+    bigram_score = (sum(1 for bg in bigrams if bg in t) / len(bigrams)) if bigrams else 0.0
+    return max(word_score, 0.7 * cov + 0.3 * bigram_score)
+
+
+def faq_keyword_match_score(query: str, item: Dict[str, Any], use_ja: bool = False) -> float:
     """
     FAQ項目全体（質問・回答・手順・キーワード・タグ・補足）に対する
     クエリの一致度を計算する。
@@ -549,7 +618,7 @@ def faq_keyword_match_score(query: str, item: Dict[str, Any]) -> float:
         item.get("note", "") or "",
     ]
     combined_text = " ".join(filter(None, search_text_parts))
-    return title_match_score(query, combined_text)
+    return keyword_match_score(query, combined_text, use_ja)
 
 
 
@@ -902,6 +971,18 @@ async def lifespan(app: FastAPI):
     admin_path.mkdir(parents=True, exist_ok=True)
     
     print("âœ… Application ready (lazy loading enabled)")
+    # 検索モデル・データを裏で先に読み込む（最初のお客様が数十秒〜数分待たされるのを防ぐ。
+    # モデル切り替え直後は埋め込みの再計算に数分かかるため特に重要）。
+    # 別スレッドで動くので、起動完了・ヘルスチェックは待たせない。WARMUP_ON_START=0 で無効化できる。
+    if os.getenv("WARMUP_ON_START", "1") != "0":
+        async def _warmup():
+            try:
+                await state.ensure_faq_loaded()
+                await state.ensure_video_loaded()
+                print(f"🔥 Warmup finished (memory {_rss_mb()} MB)")
+            except Exception as e:
+                print(f"⚠️ Warmup failed (will retry on first search): {e}")
+        app.state.warmup_task = asyncio.create_task(_warmup())
     yield
     print("ðŸ›‘ Application shutting down...")
 
@@ -941,6 +1022,77 @@ async def health_check():
 # å‹•ç”»æ¤œç´¢ã‚¨ãƒ³ãƒ‰ãƒã‚¤ãƒ³ãƒˆ
 # ============================================
 
+def video_search_core(query: str, language: Optional[str], config: Dict[str, Any], offset_limit: int = MAX_PAGE_LIMIT,
+                      include_rejected: bool = False, verbose: bool = True) -> List[Dict[str, Any]]:
+    """動画検索の本体（並び順まで確定した全件を返す）。/search と精度計測の両方から使う。
+    include_rejected=True の時は、しきい値で落ちた動画も "_passed": False を付けて返す（精度計測のしきい値分析用）。"""
+    normalized_query = normalize_text(query)
+    expanded_query = expand_with_synonyms(normalized_query, state.synonyms, language or "ja")
+
+    threshold = config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)
+    use_ja = bool(config.get("ja_tokenizer_enabled", False)) and ja_text.available()
+    if verbose:
+        print(f"🔍 Video search: query='{query}', threshold={threshold}, config={config}")
+
+    query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
+    faiss.normalize_L2(query_embedding)
+
+    # チャンク単位で検索するため、動画数ではなく総チャンク数を基準に取得件数を決定。
+    # 同一動画の複数チャンクがヒットしても動画単位に集約するため、多めに取得する。
+    total_chunks = len(state.video_chunk_map)
+    k = min(max((offset_limit + 100) * 10, 500), total_chunks)
+    distances, indices = state.video_index.search(query_embedding, k)
+
+    semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
+    title_weight = config.get("title_weight", TITLE_WEIGHT)
+
+    # チャンク単位のスコアを動画単位に集約（同じ動画は最も高いチャンクのスコアを採用）
+    best_score_per_video = {}
+    all_scores = []
+    for chunk_idx, score in zip(indices[0], distances[0]):
+        if 0 <= chunk_idx < len(state.video_chunk_map):
+            all_scores.append(float(score))
+            v_idx = state.video_chunk_map[chunk_idx]
+            s_ = float(score)
+            if v_idx not in best_score_per_video or s_ > best_score_per_video[v_idx]:
+                best_score_per_video[v_idx] = s_
+
+    results = []
+    for v_idx, semantic_score in best_score_per_video.items():
+        if not (0 <= v_idx < len(state.videos)):
+            continue
+        video = state.videos[v_idx].copy()
+        video_lang = video.get("language", "ja")
+        if language != "all" and video_lang != language:
+            continue
+        title_bonus = keyword_match_score(query, video.get("title", ""), use_ja)
+        hybrid_score = semantic_score * semantic_weight + title_bonus * title_weight
+        video["score"] = hybrid_score
+        video["semantic_score"] = semantic_score
+        video["title_score"] = title_bonus
+        passed = semantic_score >= threshold          # 閾値チェック（セマンティックスコアで判定）
+        if passed:
+            results.append(video)
+        elif include_rejected:
+            video["_passed"] = False
+            results.append(video)
+
+    if verbose and all_scores:
+        print(f"  Total candidate chunks: {len(all_scores)} (from {total_chunks} total chunks)")
+        print(f"  Unique videos matched: {len(best_score_per_video)}")
+        print(f"  Score range: {min(all_scores):.3f} - {max(all_scores):.3f}")
+        print(f"  Top 5 scores: {[f'{x:.3f}' for x in sorted(all_scores, reverse=True)[:5]]}")
+        print(f"  Passed threshold ({threshold}): {sum(1 for r in results if r.get('_passed', True))} items")
+
+    # タイトル完全一致を最優先、次点でハイブリッドスコアでソート
+    query_norm = normalize_text(query)
+    results.sort(key=lambda v: (
+        -int(query_norm in normalize_text(v.get("title", ""))),
+        -v["score"]
+    ))
+    return results
+
+
 @app.get("/search")
 async def search_videos(
     query: str = Query(..., min_length=1),
@@ -949,98 +1101,27 @@ async def search_videos(
     paged: int = Query(0),
     language: str = Query(None)
 ):
-    """å‹•ç”»æ¤œç´¢ï¼ˆãƒšãƒ¼ã‚¸ãƒ³ã‚°å¯¾å¿œï¼‰"""
+    """動画検索（ページング対応）"""
     await state.ensure_video_loaded()
-    
+
     if not state.video_index:
         return {"items": [], "has_more": False, "total_visible": 0}
-    
-    normalized_query = normalize_text(query)
-    expanded_query = expand_with_synonyms(normalized_query, state.synonyms, language or "ja")
-    
-    # 設定から閾値を取得
+
     config = await get_config()
     threshold = config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)
-    print(f"🔍 Video search: query='{query}', threshold={threshold}, config={config}")
-    
-    query_embedding = state.model.encode([expanded_query], convert_to_numpy=True)
-    faiss.normalize_L2(query_embedding)
-    
-    # チャンク単位で検索するため、動画数ではなく総チャンク数を基準に取得件数を決定。
-    # 同一動画の複数チャンクがヒットしても動画単位に集約するため、多めに取得する。
-    total_chunks = len(state.video_chunk_map)
-    k = min(max((offset + limit + 100) * 10, 500), total_chunks)
-    distances, indices = state.video_index.search(query_embedding, k)
-    
-    # 設定から重み配分を取得
-    semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
-    title_weight = config.get("title_weight", TITLE_WEIGHT)
-    
-    # チャンク単位のスコアを動画単位に集約する。
-    # 同じ動画から複数のチャンクがヒットした場合は、最もスコアの高い
-    # チャンクのスコアをその動画の意味検索スコアとして採用する。
-    # これによりtranscriptの後半・中盤にマッチする内容でも動画を検索できる。
-    best_score_per_video = {}   # video_idx -> semantic_score（最高値）
-    all_scores = []  # 全チャンクスコアを記録（デバッグ用）
+    results = video_search_core(query, language, config, offset_limit=offset + limit)
 
-    for chunk_idx, score in zip(indices[0], distances[0]):
-        if 0 <= chunk_idx < len(state.video_chunk_map):
-            all_scores.append(float(score))
-            v_idx = state.video_chunk_map[chunk_idx]
-            s = float(score)
-            if v_idx not in best_score_per_video or s > best_score_per_video[v_idx]:
-                best_score_per_video[v_idx] = s
-
-    results = []
-    for v_idx, semantic_score in best_score_per_video.items():
-        if not (0 <= v_idx < len(state.videos)):
-            continue
-        video = state.videos[v_idx].copy()
-
-        # 言語フィルタリング
-        video_lang = video.get("language", "ja")  # デフォルトは日本語
-        if language != "all" and video_lang != language:
-            continue
-
-        # ハイブリッドスコアリング
-        title_bonus = title_match_score(query, video.get("title", ""))
-        hybrid_score = semantic_score * semantic_weight + title_bonus * title_weight
-
-        video["score"] = hybrid_score
-        video["semantic_score"] = semantic_score
-        video["title_score"] = title_bonus
-
-        # 閾値チェック（セマンティックスコアで判定）
-        if semantic_score >= threshold:
-            results.append(video)
-    
-    # デバッグ: 全体のスコア分布を表示
-    if all_scores:
-        print(f"  Total candidate chunks: {len(all_scores)} (from {total_chunks} total chunks)")
-        print(f"  Unique videos matched: {len(best_score_per_video)}")
-        print(f"  Score range: {min(all_scores):.3f} - {max(all_scores):.3f}")
-        print(f"  Top 5 scores: {[f'{s:.3f}' for s in sorted(all_scores, reverse=True)[:5]]}")
-        print(f"  Passed threshold ({threshold}): {len(results)} items")
-    
-    # タイトル完全一致を最優先、次点でハイブリッドスコアでソート
-    query_norm = normalize_text(query)
-    results.sort(key=lambda v: (
-        -int(query_norm in normalize_text(v.get("title", ""))),  # タイトル一致を最優先
-        -v["score"]  # 次点でハイブリッドスコア
-    ))
-    
     total = len(results)
     items = results[offset:offset + limit]
     has_more = (offset + limit) < total
-    
-    # デバッグ: スコアの範囲を確認
+
     if results:
-        scores = [r["score"] for r in results[:10]]  # 上位10件のスコア
+        scores = [r["score"] for r in results[:10]]
         print(f"🎬 Video search results: query='{query}', total={total}, items={len(items)}, threshold={threshold}")
         print(f"   Top 10 scores: {scores}")
     else:
         print(f"🎬 Video search results: query='{query}', total=0, items=0, threshold={threshold}")
-    
+
     if paged:
         return {
             "items": items,
@@ -1049,7 +1130,7 @@ async def search_videos(
             "offset": offset,
             "limit": limit
         }
-    
+
     return {"items": items}
 
 # ============================================
@@ -1135,81 +1216,21 @@ async def search_faq(
         
         return {"items": items, "fallback": True}
     
-    # 設定から閾値を取得
     config = await get_config()
     threshold = config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)
-    print(f"🔍 FAQ search: query='{query}', threshold={threshold}, config={config}")
-    
-    normalized_query = normalize_text(query)
-    # 同義語展開で検索精度向上（Bug#5対応）
-    expanded_query = expand_with_synonyms(normalized_query, state.synonyms, language or "ja")
-    query_embedding = state.model.encode([expanded_query], convert_to_numpy=True)
-    faiss.normalize_L2(query_embedding)
-    
-    # 最大取得件数を100件に拡大
-    k = min(offset + limit + 100, len(state.faq_items_flat))
-    distances, indices = state.faq_index.search(query_embedding, k)
-    
-    # 設定から重み配分を取得
-    semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
-    title_weight = config.get("title_weight", TITLE_WEIGHT)
-    
-    results = []
-    all_scores = []  # 全スコアを記録
-    for idx, score in zip(indices[0], distances[0]):
-        if 0 <= idx < len(state.faq_items_flat):
-            all_scores.append(float(score))
-            item = state.faq_items_flat[idx].copy()
-            
-            # 言語フィルタリング
-            item_lang = item.get("language", "ja")  # デフォルトは日本語
-            if language != "all" and item_lang != language:
-                continue
-            
-            # ハイブリッドスコアリング
-            # 質問文だけでなく回答・手順・キーワード・タグ・補足も含めた
-            # 全文一致度（keyword_bonus）を計算し、embeddingが拾いきれない
-            # 専門用語・キーワードの完全一致検索を補完する。
-            semantic_score = float(score)
-            keyword_bonus = faq_keyword_match_score(query, item)
-            hybrid_score = semantic_score * semantic_weight + keyword_bonus * title_weight
-            
-            item["score"] = hybrid_score
-            item["semantic_score"] = semantic_score
-            item["title_score"] = keyword_bonus
-            
-            # 閾値チェック: セマンティックスコアが閾値以上、
-            # またはキーワード一致度が高い場合（質問・回答・手順・キーワードへの
-            # 直接一致）は意味検索のスコアが低くても結果に含める
-            if semantic_score >= threshold or keyword_bonus >= FAQ_KEYWORD_MATCH_MIN_SCORE:
-                results.append(item)
-    
-    # デバッグ: 全体のスコア分布を表示
-    if all_scores:
-        print(f"  Total candidates: {len(all_scores)}")
-        print(f"  Score range: {min(all_scores):.3f} - {max(all_scores):.3f}")
-        print(f"  Top 5 scores: {[f'{s:.3f}' for s in sorted(all_scores, reverse=True)[:5]]}")
-        print(f"  Passed threshold ({threshold}): {len(results)} items")
-    
-    # 質問文完全一致を最優先、次点でハイブリッドスコアでソート
-    query_norm = normalize_text(query)
-    results.sort(key=lambda v: (
-        -int(query_norm in normalize_text(v.get("question", ""))),  # 質問文一致を最優先
-        -v["score"]  # 次点でハイブリッドスコア
-    ))
-    
+    results = faq_search_core(query, language, config, offset_limit=offset + limit)
+
     total = len(results)
     items = results[offset:offset + limit]
     has_more = (offset + limit) < total
-    
-    # デバッグ: スコアの範囲を確認
+
     if results:
-        scores = [r["score"] for r in results[:10]]  # 上位10件のスコア
+        scores = [r["score"] for r in results[:10]]
         print(f"📋 FAQ search results: query='{query}', total={total}, items={len(items)}, threshold={threshold}")
         print(f"   Top 10 scores: {scores}")
     else:
         print(f"📋 FAQ search results: query='{query}', total=0, items=0, threshold={threshold}")
-    
+
     if paged:
         return {
             "items": items,
@@ -1218,8 +1239,65 @@ async def search_faq(
             "offset": offset,
             "limit": limit
         }
-    
+
     return {"items": items}
+
+
+def faq_search_core(query: str, language: Optional[str], config: Dict[str, Any], offset_limit: int = MAX_PAGE_LIMIT,
+                    include_rejected: bool = False, verbose: bool = True) -> List[Dict[str, Any]]:
+    """FAQ検索の本体（意味検索＋キーワード一致。並び順まで確定した全件）。/faq/search と精度計測から使う。"""
+    threshold = config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)
+    use_ja = bool(config.get("ja_tokenizer_enabled", False)) and ja_text.available()
+    if verbose:
+        print(f"🔍 FAQ search: query='{query}', threshold={threshold}, config={config}")
+
+    normalized_query = normalize_text(query)
+    expanded_query = expand_with_synonyms(normalized_query, state.synonyms, language or "ja")
+    query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
+    faiss.normalize_L2(query_embedding)
+
+    k = min(offset_limit + 100, len(state.faq_items_flat))
+    distances, indices = state.faq_index.search(query_embedding, k)
+
+    semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
+    title_weight = config.get("title_weight", TITLE_WEIGHT)
+
+    results = []
+    all_scores = []
+    for idx, score in zip(indices[0], distances[0]):
+        if 0 <= idx < len(state.faq_items_flat):
+            all_scores.append(float(score))
+            item = state.faq_items_flat[idx].copy()
+            item_lang = item.get("language", "ja")
+            if language != "all" and item_lang != language:
+                continue
+            # 質問・回答・手順・キーワード等の全文一致度で、意味検索が拾いきれない専門用語を補完
+            semantic_score = float(score)
+            keyword_bonus = faq_keyword_match_score(query, item, use_ja)
+            item["score"] = semantic_score * semantic_weight + keyword_bonus * title_weight
+            item["semantic_score"] = semantic_score
+            item["title_score"] = keyword_bonus
+            # 意味検索のスコアが閾値以上、またはキーワード一致度が高ければ結果に含める
+            passed = semantic_score >= threshold or keyword_bonus >= FAQ_KEYWORD_MATCH_MIN_SCORE
+            if passed:
+                results.append(item)
+            elif include_rejected:
+                item["_passed"] = False
+                results.append(item)
+
+    if verbose and all_scores:
+        print(f"  Total candidates: {len(all_scores)}")
+        print(f"  Score range: {min(all_scores):.3f} - {max(all_scores):.3f}")
+        print(f"  Top 5 scores: {[f'{x:.3f}' for x in sorted(all_scores, reverse=True)[:5]]}")
+        print(f"  Passed threshold ({threshold}): {sum(1 for r in results if r.get('_passed', True))} items")
+
+    # 質問文完全一致を最優先、次点でハイブリッドスコアでソート
+    query_norm = normalize_text(query)
+    results.sort(key=lambda v: (
+        -int(query_norm in normalize_text(v.get("question", ""))),
+        -v["score"]
+    ))
+    return results
 
 # ============================================
 # ç®¡ç†API - ãƒ‡ãƒ¼ã‚¿ç·¨é›†
@@ -3012,6 +3090,371 @@ async def analytics_report_xlsx(date_from: str = Query("", alias="from"), date_t
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# ============================================
+# 検索精度の計測（管理画面「精度計測」）
+# ============================================
+# 考え方:
+#   「この検索語なら、この結果が正解」という問題集を用意し、今の検索で正解が何位に出るかを数える。
+#   問題集は2種類:
+#     ① 自動: クリックログ（search_logs.csv）から。「その検索語でお客様がクリックした結果」を正解とみなす
+#     ② 手動: 管理者が登録した問題（eval_cases.json）。クリックが少ない重要な質問や、新規FAQの確認用
+#   指標:
+#     1位正解率 … 正解が1位に出た割合
+#     上位3件/10件正解率 … 正解が3位/10位以内に出た割合（お客様が最初に目にする範囲）
+#     MRR … 正解の順位の逆数の平均（1位=1.0、2位=0.5、…。順位の良さを1つの数字で表す）
+#     見つからない率 … 正解が検索結果に1件も出なかった割合
+#   注意: ①はいまの検索で表示された結果からしか選ばれないため、いまの方式に少し有利に出る。
+#         方式の比較は同じ問題集・同じ時点で行い、②の手動問題も併用するのがよい。
+
+EVAL_MAX_AUTO_CASES = 300      # 種別ごとの自動問題の上限（クリック数の多い検索語から採用。計測時間を抑えるため）
+EVAL_HISTORY_KEEP = 50
+_eval_lock = threading.Lock()
+_eval_running = {"running": False, "started": None, "label": ""}
+
+
+def _video_key(v: Dict[str, Any]) -> str:
+    vid = str(v.get("video_id") or "").strip()
+    if vid:
+        return vid
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", str(v.get("url") or "")) or re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", str(v.get("url") or ""))
+    return m.group(1) if m else ""
+
+
+def _read_json_list(path: pathlib.Path) -> list:
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"⚠️ Failed to read {path.name}: {e}")
+        return []
+
+
+def _write_json_atomic(path: pathlib.Path, data) -> None:
+    """書き込み途中で落ちても元ファイルを壊さないよう、一時ファイルに書いてから置き換える"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def build_eval_cases(source: str = "all") -> Dict[str, Any]:
+    """計測用の問題集を作る。戻り値: {"cases": [...], "skipped": {...}}"""
+    faq_by_id = {str(i.get("id")): i for i in state.faq_items_flat if i.get("id")}
+    vid_by_key = {}
+    for v in state.videos:
+        k = _video_key(v)
+        if k:
+            vid_by_key[k] = v
+    cases: List[Dict[str, Any]] = []
+    skipped = {"deleted_target": 0, "short_query": 0}
+
+    if source in ("all", "auto"):
+        groups: Dict[tuple, Dict[str, Any]] = {}
+        for r in parse_logs():
+            t, q, rid = r.get("result_type"), (r.get("query") or "").strip(), (r.get("result_id") or "").strip()
+            if t not in ("faq", "video") or not q or not rid:
+                continue
+            key = (t, normalize_text(q))
+            g = groups.setdefault(key, {"type": t, "query": q, "clicks": 0, "ids": Counter()})
+            g["clicks"] += 1
+            g["ids"][rid] += 1
+        for t in ("faq", "video"):
+            gs = sorted([g for (tt, _), g in groups.items() if tt == t], key=lambda g: -g["clicks"])
+            n = 0
+            for g in gs:
+                if n >= EVAL_MAX_AUTO_CASES:
+                    break
+                if len(normalize_text(g["query"])) < 2:
+                    skipped["short_query"] += 1
+                    continue
+                table = faq_by_id if t == "faq" else vid_by_key
+                ids = [i for i in g["ids"] if i in table]
+                if not ids:
+                    skipped["deleted_target"] += 1     # 正解のFAQ/動画が削除済み
+                    continue
+                lang = table[ids[0]].get("language", "ja") or "ja"
+                cases.append({"source": "auto", "type": t, "query": g["query"], "expected": ids,
+                              "language": lang, "clicks": g["clicks"]})
+                n += 1
+
+    if source in ("all", "manual"):
+        for c in _read_json_list(EVAL_CASES_PATH):
+            t = c.get("type")
+            table = faq_by_id if t == "faq" else vid_by_key
+            ids = [str(i) for i in (c.get("expected") or []) if str(i) in table]
+            if t not in ("faq", "video") or not c.get("query"):
+                continue
+            if not ids:
+                skipped["deleted_target"] += 1
+                continue
+            cases.append({"source": "manual", "id": c.get("id"), "type": t, "query": c["query"], "expected": ids,
+                          "language": c.get("language") or table[ids[0]].get("language", "ja") or "ja"})
+    return {"cases": cases, "skipped": skipped}
+
+
+def _rss_mb() -> Optional[float]:
+    """このプロセスのメモリ使用量(MB)。Linux(/proc)のみ。取れなければNone"""
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    return None
+
+
+def _percentile(vals: List[float], p: float) -> Optional[float]:
+    if not vals:
+        return None
+    v = sorted(vals)
+    i = min(len(v) - 1, max(0, int(round((len(v) - 1) * p))))
+    return round(v[i], 3)
+
+
+def run_eval_sync(cases: List[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any]:
+    """問題集をすべて検索して指標を計算する（重いので別スレッドで実行する）"""
+    per_type = {t: {"n": 0, "hit1": 0, "hit3": 0, "hit10": 0, "rr": 0.0, "miss": 0, "cut_by_threshold": 0,
+                    "ms": [], "correct_sem": []} for t in ("faq", "video")}
+    details = []
+    faq_title = {str(i.get("id")): i.get("question", "") for i in state.faq_items_flat}
+    vid_title = {_video_key(v): v.get("title", "") for v in state.videos}
+    for c in cases:
+        t = c["type"]
+        if t == "faq" and not state.faq_index:
+            continue
+        if t == "video" and not state.video_index:
+            continue
+        t0 = time.perf_counter()
+        try:
+            if t == "faq":
+                res = faq_search_core(c["query"], c["language"], config, include_rejected=True, verbose=False)
+                key = lambda x: str(x.get("id"))
+            else:
+                res = video_search_core(c["query"], c["language"], config, include_rejected=True, verbose=False)
+                key = _video_key
+        except Exception as e:
+            details.append({**c, "error": str(e)})
+            continue
+        elapsed = (time.perf_counter() - t0) * 1000
+        st = per_type[t]
+        st["n"] += 1
+        st["ms"].append(elapsed)
+        expected = set(c["expected"])
+        shown = [x for x in res if x.get("_passed", True)]
+        rank = next((i + 1 for i, x in enumerate(shown) if key(x) in expected), None)
+        # 正解の意味検索スコア（しきい値の目安づくり用）。落ちた候補も含めて探す
+        cand = next((x for x in res if key(x) in expected), None)
+        if cand is not None:
+            st["correct_sem"].append(float(cand.get("semantic_score", 0)))
+        if rank is None:
+            st["miss"] += 1
+            if cand is not None and cand.get("_passed") is False:
+                st["cut_by_threshold"] += 1        # 候補には上がったが、しきい値で表示されなかった
+        else:
+            st["rr"] += 1.0 / rank
+            st["hit1"] += rank <= 1
+            st["hit3"] += rank <= 3
+            st["hit10"] += rank <= 10
+        top = shown[0] if shown else None
+        details.append({
+            "source": c["source"], "type": t, "query": c["query"], "expected": c["expected"],
+            "rank": rank, "total": len(shown), "clicks": c.get("clicks"),
+            "top1": (top.get("question") if t == "faq" else top.get("title")) if top else None,
+            "expected_title": (faq_title if t == "faq" else vid_title).get(c["expected"][0], ""),
+        })
+
+    def pct(a, n):
+        return round(a / n * 100, 1) if n else None
+    metrics = {}
+    for t, st in per_type.items():
+        n = st["n"]
+        metrics[t] = {
+            "cases": n,
+            "hit1": pct(st["hit1"], n), "hit3": pct(st["hit3"], n), "hit10": pct(st["hit10"], n),
+            "mrr": round(st["rr"] / n, 3) if n else None,
+            "miss": pct(st["miss"], n), "cut_by_threshold": st["cut_by_threshold"],
+            "avg_ms": round(sum(st["ms"]) / n, 1) if n else None,
+            "p95_ms": _percentile(st["ms"], 0.95),
+            # しきい値の目安: 正解の意味検索スコアの分布（下位10%点を下回る値にすると、正解の約9割が表示対象に残る）
+            "correct_semantic_p10": _percentile(st["correct_sem"], 0.10),
+            "correct_semantic_p50": _percentile(st["correct_sem"], 0.50),
+        }
+    # 失敗した（順位が悪い）問題を上に
+    details.sort(key=lambda d: (0 if d.get("rank") is None else 1, -(d.get("rank") or 0)))
+    return {"metrics": metrics, "details": details}
+
+
+def _eval_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "model": EMBEDDING_MODEL,
+        "query_prefix": QUERY_PREFIX, "passage_prefix": PASSAGE_PREFIX,
+        "similarity_threshold": config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD),
+        "semantic_weight": config.get("semantic_weight", SEMANTIC_WEIGHT),
+        "title_weight": config.get("title_weight", TITLE_WEIGHT),
+        "ja_tokenizer_enabled": bool(config.get("ja_tokenizer_enabled", False)),
+        "ja_tokenizer_available": ja_text.available(),
+    }
+
+
+@app.get("/admin/api/eval/status", dependencies=[Depends(verify_admin)])
+async def eval_status():
+    """計測画面の上部に出す「現在の検索方式」"""
+    config = await get_config()
+    return {
+        "settings": _eval_settings(config),
+        "ja_tokenizer": ja_text.status(),
+        "model_loaded": state.model_loaded, "model_load_seconds": state.model_load_seconds,
+        "video_loaded": state.video_loaded, "faq_loaded": state.faq_loaded,
+        "videos": len(state.videos), "video_chunks": len(state.video_chunk_map), "faqs": len(state.faq_items_flat),
+        "memory_mb": _rss_mb(),
+        "running": _eval_running,
+    }
+
+
+@app.get("/admin/api/eval/cases", dependencies=[Depends(verify_admin)])
+async def eval_cases_list():
+    await state.ensure_faq_loaded()
+    await state.ensure_video_loaded()
+    built = build_eval_cases("all")
+    auto = [c for c in built["cases"] if c["source"] == "auto"]
+    return {
+        "auto": {"faq": sum(1 for c in auto if c["type"] == "faq"), "video": sum(1 for c in auto if c["type"] == "video"),
+                 "sample": auto[:30]},
+        "manual": _read_json_list(EVAL_CASES_PATH),
+        "skipped": built["skipped"],
+    }
+
+
+@app.post("/admin/api/eval/cases", dependencies=[Depends(verify_admin)])
+async def eval_cases_add(body: dict):
+    """手動の問題を追加: {"type": "faq"|"video", "query": "...", "expected": ["FAQ-ID または 動画ID", ...], "note": ""}"""
+    t = str(body.get("type") or "")
+    q = re.sub(r"\s+", " ", str(body.get("query") or "")).strip()[:200]
+    exp = body.get("expected") or []
+    if isinstance(exp, str):
+        exp = [x for x in re.split(r"[,\s、]+", exp) if x]
+    exp = [str(x).strip() for x in exp if str(x).strip()][:20]
+    if t not in ("faq", "video") or not q or not exp:
+        raise HTTPException(400, "種別(faq/video)・検索語・正解ID(1つ以上)は必須です")
+    # 存在チェック（打ち間違いの早期発見のため）
+    await state.ensure_faq_loaded()
+    await state.ensure_video_loaded()
+    known = {str(i.get("id")) for i in state.faq_items_flat} if t == "faq" else {_video_key(v) for v in state.videos}
+    unknown = [x for x in exp if x not in known]
+    if unknown:
+        raise HTTPException(400, f"存在しないIDがあります: {', '.join(unknown)}")
+    cases = _read_json_list(EVAL_CASES_PATH)
+    case = {"id": "c" + secrets.token_hex(5), "type": t, "query": q, "expected": exp,
+            "language": str(body.get("language") or "")[:5], "note": str(body.get("note") or "")[:200],
+            "created_at": datetime.now(timezone.utc).isoformat()}
+    cases.append(case)
+    _write_json_atomic(EVAL_CASES_PATH, cases)
+    return {"status": "ok", "case": case}
+
+
+@app.delete("/admin/api/eval/cases/{case_id}", dependencies=[Depends(verify_admin)])
+async def eval_cases_delete(case_id: str):
+    cases = _read_json_list(EVAL_CASES_PATH)
+    new = [c for c in cases if c.get("id") != case_id]
+    if len(new) == len(cases):
+        raise HTTPException(404, "該当する問題がありません")
+    _write_json_atomic(EVAL_CASES_PATH, new)
+    return {"status": "ok"}
+
+
+@app.post("/admin/api/eval/run", dependencies=[Depends(verify_admin)])
+async def eval_run(body: dict):
+    """計測を実行。
+    body: {"label": "メモ", "source": "all|auto|manual",
+           "overrides": {"ja_tokenizer_enabled": true, "similarity_threshold": 0.3, ...}  ← 本番設定を変えずに試す
+           "save": true}"""
+    if not _eval_lock.acquire(blocking=False):
+        raise HTTPException(409, "別の計測を実行中です。終わってから再度お試しください")
+    try:
+        _eval_running.update({"running": True, "started": datetime.now(timezone.utc).isoformat(),
+                              "label": str(body.get("label") or "")[:100]})
+        await state.ensure_faq_loaded()
+        await state.ensure_video_loaded()
+        config = dict(await get_config())
+        allowed = {"ja_tokenizer_enabled": bool, "similarity_threshold": float, "semantic_weight": float, "title_weight": float}
+        overrides = {}
+        for k, conv in allowed.items():
+            if k in (body.get("overrides") or {}):
+                try:
+                    overrides[k] = conv(body["overrides"][k])
+                except Exception:
+                    raise HTTPException(400, f"{k} の値が不正です")
+        config.update(overrides)
+        if config.get("ja_tokenizer_enabled") and not ja_text.available():
+            raise HTTPException(400, f"日本語解析ライブラリが使えません（{ja_text.status().get('error')}）。requirements.txt の fugashi / unidic-lite を確認してください")
+        source = body.get("source") if body.get("source") in ("all", "auto", "manual") else "all"
+        built = build_eval_cases(source)
+        if not built["cases"]:
+            raise HTTPException(400, "計測できる問題がありません（クリックログがまだ少ないか、手動の問題が未登録です）")
+        t0 = time.time()
+        result = await asyncio.to_thread(run_eval_sync, built["cases"], config)
+        record = {
+            "id": "e" + datetime.now(JST).strftime("%Y%m%d%H%M%S") + secrets.token_hex(2),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "label": _eval_running["label"],
+            "source": source, "overrides": overrides,
+            "settings": _eval_settings(config),
+            "metrics": result["metrics"],
+            "seconds": round(time.time() - t0, 1),
+            "memory_mb": _rss_mb(),
+            "skipped": built["skipped"],
+            "details": result["details"][:300],
+        }
+        if body.get("save", True):
+            hist = _read_json_list(EVAL_HISTORY_PATH)
+            hist.append(record)
+            try:
+                _write_json_atomic(EVAL_HISTORY_PATH, hist[-EVAL_HISTORY_KEEP:])
+            except Exception as e:
+                print(f"⚠️ Failed to save eval history: {e}")
+                record["save_error"] = str(e)
+        return record
+    finally:
+        _eval_running.update({"running": False, "started": None, "label": ""})
+        _eval_lock.release()
+
+
+@app.get("/admin/api/eval/history", dependencies=[Depends(verify_admin)])
+async def eval_history():
+    hist = _read_json_list(EVAL_HISTORY_PATH)
+    return {"history": [{k: v for k, v in h.items() if k != "details"} for h in reversed(hist)]}
+
+
+@app.get("/admin/api/eval/history/{eval_id}", dependencies=[Depends(verify_admin)])
+async def eval_history_detail(eval_id: str):
+    for h in _read_json_list(EVAL_HISTORY_PATH):
+        if h.get("id") == eval_id:
+            return h
+    raise HTTPException(404, "計測結果が見つかりません")
+
+
+@app.delete("/admin/api/eval/history/{eval_id}", dependencies=[Depends(verify_admin)])
+async def eval_history_delete(eval_id: str):
+    hist = _read_json_list(EVAL_HISTORY_PATH)
+    new = [h for h in hist if h.get("id") != eval_id]
+    if len(new) == len(hist):
+        raise HTTPException(404, "計測結果が見つかりません")
+    _write_json_atomic(EVAL_HISTORY_PATH, new)
+    return {"status": "ok"}
+
+
+@app.get("/admin/eval", response_class=HTMLResponse, include_in_schema=False)
+def serve_admin_eval():
+    f = admin_path / "eval.html"
+    if not f.exists():
+        return HTMLResponse("<h1>admin eval.html not found</h1>", status_code=404)
+    return f.read_text(encoding="utf-8")
 
 
 # ============================================
