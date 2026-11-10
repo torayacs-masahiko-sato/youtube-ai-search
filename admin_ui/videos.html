@@ -174,6 +174,29 @@
       background: #001529; color: rgba(255,255,255,0.6);
       padding: 16px 24px; text-align: center; font-size: 12px;
     }
+
+    /* ---- プレビュー ---- */
+    #previewModal{z-index:1200;}
+    #previewModal .modal-content{max-width:760px;padding:0;}
+    .pv-bar{position:sticky;top:0;z-index:2;background:#eef2ff;border-bottom:1px solid #c7d2fe;padding:10px 16px;display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;}
+    .pv-body{padding:20px 24px 24px;}
+    .pv-frame{position:relative;width:100%;padding-top:56.25%;background:#111;border-radius:10px;overflow:hidden;}
+    .pv-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}
+    .pv-frame .pv-none{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;padding:20px;text-align:center;}
+    .pv-title{font-size:18px;font-weight:700;margin:16px 0 6px;line-height:1.5;}
+    .pv-desc{font-size:13px;line-height:1.7;color:#374151;white-space:pre-wrap;}
+    .pv-meta{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12px;margin-top:14px;background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:10px 14px;}
+    .pv-meta dt{color:var(--text-muted);} .pv-meta dd{word-break:break-all;}
+    .pv-tr{margin-top:14px;font-size:12px;}
+    .pv-tr pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:160px;overflow:auto;font-family:inherit;line-height:1.6;margin-top:6px;}
+    .pv-test{margin-top:18px;border-top:2px solid var(--border);padding-top:16px;}
+    .pv-test h4{font-size:14px;margin-bottom:8px;}
+    .pv-test .row{display:flex;gap:8px;}
+    .pv-test input{flex:1;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;}
+    .pv-res{margin-top:10px;font-size:13px;padding:10px 14px;border-radius:8px;line-height:1.7;}
+    .pv-res.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
+    .pv-res.ng{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;}
+    .pv-res.info{background:#f3f4f6;color:#374151;}
   </style>
   <script src="/admin/static/auth.js"></script>
 </head>
@@ -284,9 +307,19 @@
       </div>
 
       <div class="form-actions">
+        <button class="btn" onclick="previewVideo(currentEditIndex)">👁 プレビュー</button>
         <button class="btn" onclick="closeEditModal()">キャンセル</button>
         <button class="btn btn-primary" onclick="saveVideo()">保存</button>
       </div>
+    </div>
+  </div>
+
+
+  <!-- プレビュー（お客様画面での見え方＋検索テスト。データは変更しません） -->
+  <div id="previewModal" class="modal" onclick="if(event.target===this)closePreview()">
+    <div class="modal-content">
+      <div class="pv-bar"><span>👁 動画プレビュー</span><button class="btn" onclick="closePreview()">閉じる</button></div>
+      <div class="pv-body" id="pvBody"></div>
     </div>
   </div>
 
@@ -391,11 +424,105 @@
         html += '<td>' + langBadge + '</td>';
         html += '<td style="font-weight: 500;">' + escapeHtml(title) + '</td>';
         html += '<td style="color: var(--text-muted); font-size: 12px;">' + escapeHtml(description) + '</td>';
-        html += '<td><button class="btn" onclick="editVideo(' + originalIndex + ')">編集</button></td>';
+        html += '<td style="white-space:nowrap"><button class="btn" onclick="previewVideo(' + originalIndex + ')" title="プレビューと検索テスト">👁</button> <button class="btn" onclick="editVideo(' + originalIndex + ')">編集</button></td>';
         html += '</tr>';
       }
 
       tbody.innerHTML = html;
+    }
+
+
+    /* =========================================================
+       プレビュー / 検索テスト
+       検索テストは本番と同じ /search を呼ぶので、「このキーワードでこの動画が出るか・何位か」が分かる。
+       編集中の未保存のタイトル/説明は検索結果に反映されない（検索は保存済みデータ＋索引が対象）。
+    ========================================================= */
+    var previewIdx = -1;
+
+    function videoIdOf(v) {
+      var id = String(v.video_id || '').trim();
+      if (id) return id;
+      var url = String(v.url || '');
+      var m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+      return m ? m[1] : '';
+    }
+
+    function previewVideo(index) {
+      if (index < 0 || !videos[index]) return;
+      previewIdx = index;
+      var v = videos[index];
+      // 編集モーダルから開いた場合は、入力中の内容（未保存）で表示する
+      var editing = document.getElementById('editModal').classList.contains('active') && currentEditIndex === index;
+      var title = editing ? document.getElementById('editTitle').value : (v.title || '');
+      var desc  = editing ? document.getElementById('editDescription').value : (v.description || '');
+      var lang  = editing ? document.getElementById('editLanguage').value : (v.language || '');
+      var vid = videoIdOf(v);
+      var tr = String(v.transcript || '');
+
+      var h = '<div class="pv-frame">' + (vid
+        ? '<iframe src="https://www.youtube.com/embed/' + encodeURIComponent(vid) + '?rel=0" allow="encrypted-media; fullscreen; picture-in-picture" allowfullscreen title="preview"></iframe>'
+        : '<div class="pv-none">動画IDが取得できませんでした（URLを確認してください）</div>') + '</div>';
+      h += '<div class="pv-title">' + escapeHtml(title || '(タイトルなし)') + '</div>';
+      h += '<div class="pv-desc">' + escapeHtml(desc || '（説明文なし）') + '</div>';
+      h += '<dl class="pv-meta">'
+        + '<dt>No</dt><dd>' + escapeHtml(String(v.no || '-')) + '</dd>'
+        + '<dt>言語</dt><dd>' + (lang === 'ja' ? '🇯🇵 日本語' : lang === 'en' ? '🇺🇸 English' : '⚠️ 未設定') + '</dd>'
+        + '<dt>動画ID</dt><dd>' + escapeHtml(vid || '-') + '</dd>'
+        + '<dt>URL</dt><dd>' + (v.url ? '<a href="' + escapeHtml(v.url).replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(v.url) + '</a>' : '-') + '</dd>'
+        + '<dt>文字起こし</dt><dd>' + (tr ? tr.length.toLocaleString() + ' 文字（検索対象）' : 'なし（タイトル＋説明文のみが検索対象）') + '</dd>'
+        + '</dl>';
+      if (tr) {
+        h += '<div class="pv-tr"><b>文字起こし（先頭部分）</b><pre>' + escapeHtml(tr.slice(0, 600)) + (tr.length > 600 ? ' …' : '') + '</pre></div>';
+      }
+      h += '<div class="pv-test"><h4>🔍 検索テスト：このキーワードでこの動画は出る？</h4>'
+        + '<div class="row"><input type="text" id="pvQuery" placeholder="例: プリンタ 印刷できない" onkeydown="if(event.key===\'Enter\')runSearchTest()">'
+        + '<button class="btn btn-primary" onclick="runSearchTest()">テスト</button></div>'
+        + '<div id="pvRes"></div></div>';
+      document.getElementById('pvBody').innerHTML = h;
+      document.getElementById('previewModal').classList.add('active');
+    }
+
+    function closePreview() {
+      document.getElementById('pvBody').innerHTML = '';   // iframeを消して再生を止める
+      document.getElementById('previewModal').classList.remove('active');
+    }
+
+    async function runSearchTest() {
+      var q = document.getElementById('pvQuery').value.trim();
+      var box = document.getElementById('pvRes');
+      var v = videos[previewIdx];
+      if (!q || !v) { return; }
+      box.className = 'pv-res info'; box.textContent = '検索中...';
+      try {
+        var lang = v.language || 'ja';
+        var r = await fetch('/search?query=' + encodeURIComponent(q) + '&offset=0&limit=100&paged=1&language=' + encodeURIComponent(lang));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var d = await r.json();
+        var items = d.items || [];
+        var vid = videoIdOf(v);
+        var pos = -1;
+        for (var i = 0; i < items.length; i++) {
+          if ((vid && videoIdOf(items[i]) === vid) || (v.url && items[i].url === v.url)) { pos = i; break; }
+        }
+        var total = d.total_visible != null ? d.total_visible : items.length;
+        if (pos >= 0) {
+          var it = items[pos];
+          box.className = 'pv-res ok';
+          box.innerHTML = '✅ ヒットしました：<b>' + (pos + 1) + '位</b> / ' + total + '件中'
+            + (it.score != null ? '<br>総合スコア ' + Number(it.score).toFixed(3)
+               + '（意味 ' + Number(it.semantic_score || 0).toFixed(3) + ' / タイトル一致 ' + Number(it.title_score || 0).toFixed(3) + '）' : '');
+        } else {
+          box.className = 'pv-res ng';
+          box.innerHTML = '❌ この動画はヒットしませんでした（他の動画 ' + total + '件がヒット）。<br>'
+            + '<span style="font-size:12px">タイトル・説明文にキーワードを足す／同義語を登録する と出やすくなります。</span>';
+        }
+        if (items.length) {
+          box.innerHTML += '<div style="margin-top:8px;font-size:12px;color:#374151">上位3件: '
+            + items.slice(0, 3).map(function(x, i) { return (i + 1) + '. ' + escapeHtml(x.title || ''); }).join(' ／ ') + '</div>';
+        }
+      } catch (e) {
+        box.className = 'pv-res ng'; box.textContent = '検索テストに失敗しました: ' + e.message;
+      }
     }
 
     function editVideo(index) {

@@ -82,6 +82,29 @@
     .rk-count{font-size:13px;font-weight:700;color:var(--brand);flex-shrink:0;}
     .rk-empty{text-align:center;padding:24px;color:var(--muted);font-size:13px;}
 
+
+    /* 検索分析 */
+    .an-tool{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 16px;}
+    .an-tool input[type=date]{padding:7px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;}
+    .an-note{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:12px;color:#92400e;margin-bottom:14px;}
+    .delta{font-size:11px;margin-top:2px;color:var(--muted);}
+    .delta.good{color:#059669;}.delta.bad{color:#dc2626;}
+    .cols{display:flex;align-items:flex-end;gap:2px;height:110px;padding-top:6px;}
+    .col{flex:1;background:var(--brand);border-radius:3px 3px 0 0;min-height:1px;position:relative;opacity:.85;}
+    .col:hover{opacity:1;}
+    .col-lbl{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:4px;}
+    .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+    .pill.r{background:#fee2e2;color:#b91c1c;}.pill.y{background:#fef3c7;color:#92400e;}
+    .scroll{max-height:380px;overflow:auto;}
+    .print-only{display:none;}
+    @media print{
+      header,footer,.toolbar,.an-tool,#rankSec,#monthSec,.no-print{display:none!important;}
+      body{background:#fff;}main{padding:0;max-width:none;}
+      .print-only{display:block;margin-bottom:12px;}
+      .scroll{max-height:none;overflow:visible;}
+      .card{break-inside:avoid;box-shadow:none;}
+    }
+
     /* 状態 */
     .loading{text-align:center;padding:60px;color:var(--muted);}
     .sp{display:inline-block;width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--brand);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:8px;}
@@ -111,8 +134,28 @@
 
 <main>
 
+
+  <!-- ===== 検索分析（検索実行ログ） ===== -->
+  <div style="margin-bottom:36px;" id="anSec">
+    <div class="sec-title">🔎 検索分析</div>
+    <div class="print-only"><b>サポート検索 分析レポート</b> <span id="anPrintRange"></span></div>
+    <div class="an-tool">
+      <select id="anPreset" onchange="anPreset()">
+        <option value="7">直近7日</option><option value="30" selected>直近30日</option>
+        <option value="90">直近90日</option><option value="thismonth">今月</option>
+        <option value="lastmonth">先月</option><option value="custom">期間を指定</option>
+      </select>
+      <input type="date" id="anFrom" onchange="anCustom()"> 〜 <input type="date" id="anTo" onchange="anCustom()">
+      <button class="btn" onclick="anLoad()">更新</button>
+      <button class="btn" onclick="anExcel()">📥 Excelレポート</button>
+      <button class="btn" onclick="window.print()">🖨 印刷 / PDF保存</button>
+    </div>
+    <div id="anErr" class="errbox" style="display:none"></div>
+    <div id="anBody"><div class="loading"><span class="sp"></span>読み込み中...</div></div>
+  </div>
+
   <!-- ===== ① ランキングセクション ===== -->
-  <div style="margin-bottom:32px;">
+  <div style="margin-bottom:32px;" id="rankSec">
     <div class="sec-title">🏆 クリックランキング TOP10</div>
     <div class="grid2">
       <div class="card">
@@ -127,6 +170,7 @@
   </div>
 
   <!-- ===== ② 月別ログセクション ===== -->
+  <div id="monthSec">
   <div class="sec-title">📊 月別ログ</div>
   <div class="toolbar" style="margin-top:12px;">
     <select id="monthSel" onchange="loadSummary()"><option value="">月を選択...</option></select>
@@ -156,6 +200,7 @@
     <p style="margin-top:8px;font-size:13px">FAQや動画の検索結果をクリックするとここに記録されます</p>
   </div>
   <div id="content" style="display:none"></div>
+  </div>
 
 </main>
 <footer>Copyright &copy; 2026 Toray Advanced Computer Solution, Inc.</footer>
@@ -328,7 +373,129 @@
     .catch(function(e){showErr('診断に失敗: '+e.message);});
   }
 
+  /* ================================================================
+     検索分析（検索実行ログ）
+  ================================================================ */
+  function ymd(d){ var m=d.getMonth()+1, dd=d.getDate(); return d.getFullYear()+'-'+(m<10?'0':'')+m+'-'+(dd<10?'0':'')+dd; }
+  function anPreset() {
+    var v=document.getElementById('anPreset').value, today=new Date(), f, t=today;
+    if(v==='custom') return;
+    if(v==='thismonth'){ f=new Date(today.getFullYear(),today.getMonth(),1); }
+    else if(v==='lastmonth'){ f=new Date(today.getFullYear(),today.getMonth()-1,1); t=new Date(today.getFullYear(),today.getMonth(),0); }
+    else { f=new Date(today.getTime()-(parseInt(v,10)-1)*86400000); }
+    document.getElementById('anFrom').value=ymd(f); document.getElementById('anTo').value=ymd(t);
+    anLoad();
+  }
+  function anCustom(){ document.getElementById('anPreset').value='custom'; }
+  function anQuery(){
+    var f=document.getElementById('anFrom').value, t=document.getElementById('anTo').value;
+    return '?from='+encodeURIComponent(f)+'&to='+encodeURIComponent(t);
+  }
+  function anShowErr(m){ var e=document.getElementById('anErr'); e.textContent='⚠️ '+m; e.style.display=''; }
+
+  function anLoad() {
+    document.getElementById('anErr').style.display='none';
+    document.getElementById('anBody').innerHTML='<div class="loading"><span class="sp"></span>読み込み中...</div>';
+    fetch('/admin/api/analytics/overview'+anQuery(), { headers:{ 'Authorization': makeH() } })
+    .then(function(r){
+      if(r.status===401){ window.location.href='/admin'; return null; }
+      if(!r.ok) return r.json().then(function(j){ throw new Error(j.detail||('HTTP '+r.status)); });
+      return r.json();
+    })
+    .then(function(d){ if(d) anRender(d); })
+    .catch(function(e){ document.getElementById('anBody').innerHTML=''; anShowErr('検索分析の読み込みに失敗: '+e.message); });
+  }
+
+  // 増減表示。lowerIsBetter=true は「少ないほど良い」指標（0件率など）
+  function delta(cur, prev, lowerIsBetter, unit) {
+    if(prev==null || cur==null) return '<div class="delta">前期間: -</div>';
+    var diff=Math.round((cur-prev)*10)/10;
+    if(diff===0) return '<div class="delta">前期間: '+prev+(unit||'')+'（変化なし）</div>';
+    var good = lowerIsBetter ? diff<0 : diff>0;
+    return '<div class="delta '+(good?'good':'bad')+'">'+(diff>0?'▲ +':'▼ ')+diff+(unit||'')+'（前期間: '+prev+(unit||'')+'）</div>';
+  }
+  function kpiBox(label, val, unit, color, dHtml){
+    return '<div class="stat"><div class="sl">'+label+'</div><div class="sv" style="color:'+color+'">'+(val==null?'-':val)+(val==null?'':unit)+'</div>'+dHtml+'</div>';
+  }
+  function colChart(vals, labels, title){
+    var max=Math.max.apply(null, vals.concat([1]));
+    var cols=vals.map(function(v,i){ return '<div class="col" style="height:'+(v/max*100)+'%" title="'+esc(labels[i])+': '+v+'件"></div>'; }).join('');
+    return '<div class="card"><div class="ct">'+title+'</div><div class="cols">'+cols+'</div>'
+      +'<div class="col-lbl"><span>'+esc(labels[0])+'</span><span>'+esc(labels[Math.floor(labels.length/2)])+'</span><span>'+esc(labels[labels.length-1])+'</span></div></div>';
+  }
+  function listTable(rows, heads, cells, emptyMsg){
+    if(!rows.length) return '<div class="empty" style="padding:20px">'+emptyMsg+'</div>';
+    var h='<div class="scroll"><table><thead><tr>'+heads.map(function(x){return '<th>'+x+'</th>';}).join('')+'</tr></thead><tbody>';
+    rows.forEach(function(r){ h+='<tr>'+cells(r)+'</tr>'; });
+    return h+'</tbody></table></div>';
+  }
+
+  function anRender(d) {
+    document.getElementById('anPrintRange').textContent = d.from+' 〜 '+d.to;
+    var k=d.kpi, p=d.prev||{}, html='';
+    if(!d.has_data){
+      html+='<div class="an-note">📭 検索実行ログはまだ記録されていません。お客様が検索すると、ここに分析結果が表示されます（記録は今回の更新以降のデータが対象です）。</div>';
+    } else if(d.data_start && d.data_start > d.from){
+      html+='<div class="an-note">ℹ️ 検索実行ログの記録開始日は <b>'+esc(d.data_start)+'</b> です。それ以前の期間は集計されないため、前期間との比較は参考値です。</div>';
+    }
+    html+='<div class="stats">'
+      +kpiBox('検索回数',k.searches,'回','var(--brand)',delta(k.searches,p.searches,false,''))
+      +kpiBox('ユニークキーワード',k.unique_queries,'','var(--brand)',delta(k.unique_queries,p.unique_queries,false,''))
+      +kpiBox('クリック率',k.click_rate,'%','var(--faq)',delta(k.click_rate,p.click_rate,false,'%'))
+      +kpiBox('FAQ 0件率',k.zero_faq_rate,'%','#dc2626',delta(k.zero_faq_rate,p.zero_faq_rate,true,'%'))
+      +kpiBox('動画 0件率',k.zero_video_rate,'%','#dc2626',delta(k.zero_video_rate,p.zero_video_rate,true,'%'))
+      +kpiBox('両方0件率',k.zero_both_rate,'%','#dc2626',delta(k.zero_both_rate,p.zero_both_rate,true,'%'))
+      +'</div>';
+    html+='<div style="font-size:12px;color:var(--muted);margin:-12px 0 16px">※クリック率＝結果（FAQ/動画）が1件以上クリックされた検索の割合。0件率が高いほど「探しても見つからなかった」検索が多いことを示します。</div>';
+
+    // 推移グラフ
+    html+='<div class="grid2" style="margin-bottom:20px">'
+      +colChart(d.daily.map(function(x){return x.searches;}), d.daily.map(function(x){return x.day;}), '📅 日別 検索回数')
+      +colChart(d.hourly, d.hourly.map(function(_,h){return h+'時';}), '🕐 時間帯別 検索回数（日本時間）')
+      +'</div>';
+    var wd=['月','火','水','木','金','土','日'];
+    html+='<div class="grid2" style="margin-bottom:20px">'
+      +colChart(d.weekday, wd, '📆 曜日別 検索回数（左から月〜日）')
+      +'<div class="card"><div class="ct">🔝 人気キーワード TOP10</div>'
+      +listTable(d.top_queries.slice(0,10),['キーワード','回数','クリック率'],function(r){
+        return '<td>'+esc(r.query)+'</td><td>'+r.count+'</td><td>'+r.click_rate+'%</td>'; },'データなし')+'</div></div>';
+
+    // 改善ネタ
+    html+='<div class="grid2" style="margin-bottom:20px">'
+      +'<div class="card"><div class="ct">🚫 ヒットなしキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（FAQ・動画の追加／同義語登録の候補）</span></div>'
+      +listTable(d.zero_hit,['キーワード','回数','FAQ0','動画0'],function(r){
+        return '<td>'+esc(r.query)+(r.both_zero?' <span class="pill r">両方0件</span>':'')+'</td><td>'+r.count+'</td><td>'+r.faq_zero+'</td><td>'+r.video_zero+'</td>'; },'ヒットなしの検索はありません 👍')+'</div>'
+      +'<div class="card"><div class="ct">👀 クリックされなかったキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（結果はあるが選ばれない＝内容や並び順の見直し候補）</span></div>'
+      +listTable(d.no_click,['キーワード','未クリック','平均FAQ件数','平均動画件数'],function(r){
+        return '<td>'+esc(r.query)+'</td><td><span class="pill y">'+r.no_click+'回</span></td><td>'+(r.avg_faq_hits==null?'-':r.avg_faq_hits)+'</td><td>'+r.avg_video_hits+'</td>'; },'該当なし')+'</div>'
+      +'</div>';
+
+    // 期間内クリックランキング
+    function rk(items, type){
+      if(!items.length) return '<div class="empty" style="padding:20px">データなし</div>';
+      return '<ol class="rk-list">'+items.map(function(it,i){
+        var c=i===0?'top1':i===1?'top2':i===2?'top3':'other';
+        return '<li class="rk-item"><div class="rk-num '+c+'">'+(i+1)+'</div><div class="rk-body"><div class="rk-title">'+esc(type==='faq'?it.question:it.title)+'</div>'
+          +(type==='faq'&&it.category?'<div class="rk-sub">'+esc(it.category)+'</div>':'')+'</div><div class="rk-count">'+it.click_count+'回</div></li>'; }).join('')+'</ol>';
+    }
+    html+='<div class="grid2"><div class="card"><div class="ct">📝 期間内 FAQクリック TOP10</div>'+rk(d.faq_ranking,'faq')+'</div>'
+      +'<div class="card"><div class="ct">🎬 期間内 動画クリック TOP10</div>'+rk(d.video_ranking,'video')+'</div></div>';
+    document.getElementById('anBody').innerHTML=html;
+  }
+
+  function anExcel() {
+    fetch('/admin/api/analytics/report.xlsx'+anQuery(), { headers:{ 'Authorization': makeH() } })
+    .then(function(r){
+      if(!r.ok) return r.json().then(function(j){ throw new Error(j.detail||('HTTP '+r.status)); });
+      var cd=r.headers.get('Content-Disposition')||''; var m=/filename="?([^";]+)"?/.exec(cd);
+      return r.blob().then(function(b){ return {b:b, name:(m?m[1]:'search_report.xlsx')}; });
+    })
+    .then(function(o){ var u=URL.createObjectURL(o.b), a=document.createElement('a'); a.href=u; a.download=o.name; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); })
+    .catch(function(e){ anShowErr('Excel出力に失敗: '+e.message); });
+  }
+
   /* ---- 起動 ---- */
+  anPreset();
   loadRankings();
   loadMonths();
 </script>

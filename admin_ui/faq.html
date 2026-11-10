@@ -225,6 +225,34 @@
     }
     .progress-text { font-size: 13px; color: var(--text-muted); }
 
+
+    /* ---- プレビュー（お客様画面の見た目に合わせる） ---- */
+    #previewModal{z-index:1200;}
+    .pv-box{background:#fff;border-radius:16px;max-width:720px;width:94%;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+    .pv-bar{position:sticky;top:0;background:#fff7e6;border-bottom:1px solid #fde68a;padding:8px 16px;font-size:12px;color:#92400e;display:flex;justify-content:space-between;align-items:center;z-index:1;}
+    .pv-body{padding:24px;}
+    .pv-q{font-size:19px;font-weight:700;line-height:1.5;margin-bottom:6px;}
+    .pv-meta{font-size:12px;color:var(--text-muted);margin-bottom:16px;}
+    .pv-sec{margin-top:18px;}
+    .pv-label{font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:.08em;margin-bottom:10px;}
+    .pv-text{font-size:14px;line-height:1.7;}
+    .pv-note{background:#fffbeb;border-left:4px solid #f59e0b;border-radius:6px;padding:12px 14px;}
+    .pv-steps{list-style:none;display:flex;flex-direction:column;gap:10px;padding:0;margin:0;}
+    .pv-steps li{display:flex;gap:12px;align-items:flex-start;}
+    .pv-num{flex-shrink:0;width:26px;height:26px;background:var(--brand);color:#fff;border-radius:50%;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+    .pv-steps li.pv-cat{margin-top:8px;}
+    .pv-steps li.pv-cat:first-child{margin-top:0;}
+    .pv-cat-label{font-size:13px;font-weight:700;color:var(--brand);background:var(--brand-light);padding:4px 10px;border-radius:6px;display:inline-block;}
+    .pv-st{font-size:14px;line-height:1.6;padding-top:3px;min-width:0;flex:1;}
+    .pv-kw{margin-top:18px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;}
+    .pv-kw span{background:#f3f4f6;border-radius:12px;padding:2px 10px;font-size:11px;color:#374151;}
+    .faq-link{color:var(--brand);text-decoration:underline;word-break:break-all;}
+    .faq-image-wrap{display:block;margin:10px 0;}
+    .faq-inline-image{display:block;max-width:100%;max-height:320px;width:auto;height:auto;object-fit:contain;border-radius:8px;border:1px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,.08);cursor:zoom-in;}
+    .faq-image-hint{font-size:11px;color:var(--text-muted);margin-top:4px;}
+    .faq-file-link{display:inline-flex;align-items:center;gap:6px;margin:4px 0;padding:6px 12px;background:#fff;border:1px solid var(--border);border-radius:8px;text-decoration:none;color:var(--brand);font-size:13px;max-width:100%;}
+    .faq-file-link:hover{border-color:var(--brand);background:var(--brand-light);}
+    .faq-file-name{word-break:break-all;text-decoration:underline;}
   </style>
   <script src="/admin/static/auth.js"></script>
 </head>
@@ -347,9 +375,19 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button class="btn btn-outline" onclick="previewFromForm()" title="入力中の内容をお客様画面の見た目で確認します">👁 プレビュー</button>
         <button class="btn btn-outline" onclick="closeModal()">キャンセル</button>
         <button class="btn btn-primary" id="saveBtn" onclick="saveFaq()">保存</button>
       </div>
+    </div>
+  </div>
+
+
+  <!-- プレビュー（お客様画面の表示イメージ。保存はされません） -->
+  <div class="modal-overlay" id="previewModal" onclick="if(event.target===this)closePreview()">
+    <div class="pv-box">
+      <div class="pv-bar"><span>👁 お客様画面での表示イメージ（まだ保存されていません）</span><button class="modal-close" onclick="closePreview()">✕</button></div>
+      <div class="pv-body" id="pvBody"></div>
     </div>
   </div>
 
@@ -479,6 +517,7 @@
           '<td>' + langBadge + '</td>' +
           '<td style="max-width:400px;">' + esc(item.question || '') + '</td>' +
           '<td><div class="action-btns">' +
+            '<button class="btn btn-outline btn-sm" onclick="previewById(\'' + esc(item.id) + '\')" title="お客様画面での見え方">👁</button>' +
             '<button class="btn btn-outline btn-sm" onclick="openEditModal(\'' + esc(item.id) + '\')">編集</button>' +
             '<button class="btn btn-danger btn-sm" onclick="openDeleteModal(\'' + esc(item.id) + '\',\'' + esc(item.question || '') + '\')">削除</button>' +
           '</div></td>';
@@ -498,6 +537,161 @@
     }
 
     // 作成モーダル
+
+    /* =========================================================
+       FAQプレビュー（お客様画面 frontend/index.html と同じ表示ロジック）
+       なぜ複製か: 管理画面とお客様画面は別ページのため。表示ルール（URL自動リンク・
+       画像埋め込み・【】見出しの番号リセット）を変えたら、こちらも合わせること。
+    ========================================================= */
+  var IMAGE_EXTS = 'png|jpe?g|gif|webp|svg|bmp';
+  var OTHER_FILE_EXTS = 'pdf|docx?|xlsx?|pptx?|zip|rar|7z|exe|msi|reg|csv|txt';
+
+  // ファイルURL用（画像・画像以外どちらも含む）: 改行・タグ開始が来るまでの間で
+  // 既知の拡張子（クエリパラメータが続く場合も含む）を探す。日本語・スペースを許容。
+  var FILE_URL_PATTERN = new RegExp(
+    '(https?:\\/\\/[^\\n<]*?\\.(?:' + IMAGE_EXTS + '|' + OTHER_FILE_EXTS + ')(?:\\?[^\\s\\u3000)\\]。、,.，．<]*)?)(?=[\\s\\u3000)\\]。、,.，．]|$)',
+    'gi'
+  );
+  var IMAGE_EXT_TEST = new RegExp('\\.(' + IMAGE_EXTS + ')(?:\\?.*)?$', 'i');
+
+  // 通常URL用: ASCII文字のみの厳密パターン（拡張子を持たないURL等）
+  var PLAIN_URL_PATTERN = /(https?:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&*+,;=%]+)/g;
+
+  // ファイル種別ごとのアイコン
+  var FILE_ICONS = {
+    pdf: '📄', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊',
+    ppt: '📋', pptx: '📋', zip: '🗜️', rar: '🗜️', '7z': '🗜️',
+    exe: '⚙️', msi: '⚙️', reg: '🔧', csv: '📃', txt: '📃'
+  };
+
+  function isImageUrl(url) {
+    return IMAGE_EXT_TEST.test(url);
+  }
+
+  function getFileIcon(filename) {
+    var ext = (filename.split('.').pop() || '').toLowerCase();
+    return FILE_ICONS[ext] || '📎';
+  }
+
+  // 画像の読み込みに失敗した場合、通常のリンク表示に差し替える
+  function handleFaqImageError(imgEl) {
+    var url = imgEl.getAttribute('src');
+    var wrapper = imgEl.closest('.faq-image-wrap');
+    if (!wrapper) return;
+    var link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'faq-link';
+    link.textContent = url;
+    wrapper.replaceWith(link);
+  }
+  window.handleFaqImageError = handleFaqImageError;
+    function openImageLightbox(url) { window.open(url, '_blank', 'noopener'); }
+    window.openImageLightbox = openImageLightbox;
+  function linkify(str) {
+    var escaped = esc(str);
+
+    // 1. まずファイルURL（画像／PDF等どちらも）を検出し、
+    //    一意なプレースホルダーに退避する（通常URLパターンとの衝突防止）
+    var files = [];
+    var withPlaceholders = escaped.replace(FILE_URL_PATTERN, function(url) {
+      var idx = files.length;
+      files.push(url);
+      return '\u0000FILE' + idx + '\u0000';
+    });
+
+    // 2. 残りのテキストに対して通常URLをリンク化
+    var linked = withPlaceholders.replace(PLAIN_URL_PATTERN, function(url) {
+      // 末尾に付きがちな括弧・句読点はリンクの外に出す
+      var trail = '';
+      var m = url.match(/([)\].,;:]+)$/);
+      if (m) {
+        trail = m[1];
+        url = url.slice(0, url.length - trail.length);
+      }
+      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="faq-link">' + url + '</a>' + trail;
+    });
+
+    // 3. プレースホルダーを画像 or ファイルリンク表示用HTMLに復元
+    linked = linked.replace(/\u0000FILE(\d+)\u0000/g, function(_, idxStr) {
+      var url = files[parseInt(idxStr, 10)];
+
+      if (isImageUrl(url)) {
+        // 画像URLはその場に埋め込み表示（クリックで拡大）
+        var jsUrl = url.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return '<span class="faq-image-wrap">' +
+                 '<img src="' + url + '" alt="" class="faq-inline-image" loading="lazy" ' +
+                      'onerror="handleFaqImageError(this)" ' +
+                      'onclick="openImageLightbox(\'' + jsUrl + '\')">' +
+                 '<span class="faq-image-hint">🔍 クリックで拡大</span>' +
+               '</span>';
+      }
+
+      // 画像以外のファイル（PDF/Office/ZIP/EXE等）はファイル名＋アイコン付きリンク
+      var filenameRaw = url.split('/').pop().split('?')[0];
+      var filename = filenameRaw;
+      try { filename = decodeURIComponent(filenameRaw); } catch (e) { /* デコード不可な場合はそのまま */ }
+      var icon = getFileIcon(filename);
+      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="faq-file-link">' +
+               '<span class="faq-file-icon">' + icon + '</span>' +
+               '<span class="faq-file-name">' + esc(filename) + '</span>' +
+             '</a>';
+    });
+
+    return linked.replace(/\n/g, '<br>');
+  }
+
+    function renderPreview(item) {
+      var h = '<div class="pv-q">' + esc(item.question || '（質問が未入力です）') + '</div>'
+        + '<div class="pv-meta">' + esc(item.category || 'カテゴリ未設定') + ' ／ ' + esc(item.id || '新規（ID自動採番）') + '</div>';
+      if ((item.answer || '').trim()) {
+        h += '<div class="pv-sec"><div class="pv-label">💡 回答</div><div class="pv-text">' + linkify(item.answer) + '</div></div>';
+      }
+      var steps = item.steps || [], n = 0, cat = /^\s*【(.+?)】\s*$/;
+      h += '<div class="pv-sec"><div class="pv-label">✅ 手順</div>';
+      if (!steps.length) {
+        h += '<div class="pv-text" style="color:#6b7280">詳細情報がありません。</div>';
+      } else {
+        h += '<ol class="pv-steps">';
+        steps.forEach(function(t) {
+          t = String(t || '');
+          var m = t.match(cat);
+          if (m) { n = 0; h += '<li class="pv-cat"><span class="pv-cat-label">' + esc(m[1]) + '</span></li>'; }
+          else { n++; h += '<li><span class="pv-num">' + n + '</span><span class="pv-st">' + linkify(t) + '</span></li>'; }
+        });
+        h += '</ol>';
+      }
+      h += '</div>';
+      if ((item.note || '').trim()) {
+        h += '<div class="pv-sec"><div class="pv-label">📌 ワンポイントアドバイス</div><div class="pv-text pv-note">' + linkify(item.note) + '</div></div>';
+      }
+      var kws = item.keywords || [];
+      if (kws.length) {
+        h += '<div class="pv-kw">' + kws.map(function(k) { return '<span>' + esc(k) + '</span>'; }).join('') + '</div>';
+      }
+      document.getElementById('pvBody').innerHTML = h;
+      document.getElementById('previewModal').classList.add('active');
+    }
+    function previewFromForm() {
+      var steps = document.getElementById('fieldSteps').value.split('\n').map(function(x) { return x.trim(); }).filter(Boolean);
+      var kws = document.getElementById('fieldKeywords').value.split(/[,、，]/).map(function(x) { return x.trim(); }).filter(Boolean);
+      renderPreview({
+        id: document.getElementById('fieldId').value.trim(),
+        category: document.getElementById('fieldCategory').value.trim(),
+        question: document.getElementById('fieldQuestion').value.trim(),
+        answer: document.getElementById('fieldAnswer').value,
+        steps: steps,
+        note: document.getElementById('fieldNote').value,
+        keywords: kws
+      });
+    }
+    function previewById(id) {
+      var item = allItems.find(function(i) { return i.id === id; });
+      if (item) renderPreview(item);
+    }
+    function closePreview() { document.getElementById('previewModal').classList.remove('active'); }
+
     function openCreateModal() {
       editingId = null;
       document.getElementById('modalTitle').textContent = 'FAQ新規作成';
@@ -666,7 +860,7 @@
 
     document.getElementById('editModal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
     document.getElementById('deleteModal').addEventListener('click', function(e) { if (e.target === this) closeDeleteModal(); });
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') { closeModal(); closeDeleteModal(); } });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') { closePreview(); closeModal(); closeDeleteModal(); } });
 
     loadFaq();
   
