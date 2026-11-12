@@ -97,6 +97,10 @@
     .btn:hover {
       background: #f9fafb;
     }
+    .btn-danger { color: #b91c1c; border-color: #fecaca; }
+    .btn-danger:hover:not(:disabled) { background: #fef2f2; border-color: #f87171; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    tr.selected td { background: #eff6ff; }
     .btn-primary {
       background: var(--brand);
       color: white;
@@ -242,6 +246,8 @@
         </select>
         <input type="text" id="searchInput" placeholder="タイトル、説明文で検索..." oninput="filterVideos()">
         <div style="margin-left: auto; display: flex; gap: 8px;">
+          <button class="btn btn-danger" id="delSelBtn" onclick="deleteSelected()" disabled>🗑 選択削除（<span id="selCount">0</span>件）</button>
+          <button class="btn btn-danger" onclick="deleteAll()">🗑 一括削除</button>
           <button class="btn" onclick="exportData()">📥 エクスポート</button>
           <button class="btn btn-primary" onclick="document.getElementById('importFile').click()">📤 インポート</button>
           <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importData(event)">
@@ -252,6 +258,7 @@
         <table class="video-table">
           <thead>
             <tr>
+              <th style="width: 36px;"><input type="checkbox" id="selAll" title="表示中の動画をすべて選択" onchange="toggleSelectAll(this.checked)"></th>
               <th style="width: 50px;">No</th>
               <th style="width: 80px;">言語</th>
               <th>タイトル</th>
@@ -355,7 +362,7 @@
       } catch (error) {
         console.error('Error loading videos:', error);
         document.getElementById('videoList').innerHTML = 
-          '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #dc2626;">エラー: ' + error.message + '</td></tr>';
+          '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #dc2626;">エラー: ' + error.message + '</td></tr>';
       }
     }
 
@@ -394,10 +401,13 @@
       var tbody = document.getElementById('videoList');
       
       if (videoList.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-muted);">該当する動画がありません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">該当する動画がありません</td></tr>';
+        visibleVideos = [];
+        updateSelectionUi();
         return;
       }
 
+      visibleVideos = videoList;
       var html = '';
       for (var i = 0; i < videoList.length; i++) {
         var video = videoList[i];
@@ -420,7 +430,9 @@
         // 元のインデックスを保持
         var originalIndex = videos.indexOf(video);
 
-        html += '<tr>';
+        var checked = selectedVideos.has(video);
+        html += '<tr' + (checked ? ' class="selected"' : '') + '>';
+        html += '<td><input type="checkbox" ' + (checked ? 'checked ' : '') + 'onchange="toggleSelect(' + originalIndex + ', this.checked)"></td>';
         html += '<td>' + (video.no || '-') + '</td>';
         html += '<td>' + langBadge + '</td>';
         html += '<td style="font-weight: 500;">' + escapeHtml(title) + '</td>';
@@ -430,6 +442,82 @@
       }
 
       tbody.innerHTML = html;
+      updateSelectionUi();
+    }
+
+    /* =========================================================
+       選択削除・一括削除
+       選択は動画データそのもの（オブジェクト）で覚える。絞り込みや並び替えで行番号がずれても、
+       選んだ動画だけが確実に削除されるようにするため。
+    ========================================================= */
+    var selectedVideos = new Set();
+    var visibleVideos = [];
+
+    function toggleSelect(index, on) {
+      var v = videos[index];
+      if (!v) return;
+      if (on) selectedVideos.add(v); else selectedVideos.delete(v);
+      filterVideos();
+    }
+
+    function toggleSelectAll(on) {
+      visibleVideos.forEach(function(v) { if (on) selectedVideos.add(v); else selectedVideos.delete(v); });
+      filterVideos();
+    }
+
+    function updateSelectionUi() {
+      // 再読み込み等で消えた動画は選択から外す
+      selectedVideos.forEach(function(v) { if (videos.indexOf(v) === -1) selectedVideos.delete(v); });
+      document.getElementById('selCount').textContent = selectedVideos.size;
+      document.getElementById('delSelBtn').disabled = selectedVideos.size === 0;
+      var all = document.getElementById('selAll');
+      var nSel = visibleVideos.filter(function(v) { return selectedVideos.has(v); }).length;
+      all.checked = visibleVideos.length > 0 && nSel === visibleVideos.length;
+      all.indeterminate = nSel > 0 && nSel < visibleVideos.length;
+    }
+
+    function authHeaders(json) {
+      var h = { 'Authorization': 'Bearer ' + JSON.parse(auth).token };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    async function deleteSelected() {
+      var n = selectedVideos.size;
+      if (!n) return;
+      var names = Array.from(selectedVideos).slice(0, 5).map(function(v) { return '・' + (v.title || '(タイトルなし)'); }).join('\n');
+      if (!confirm('選択した ' + n + ' 件の動画データを削除します。\n\n' + names + (n > 5 ? '\n…ほか ' + (n - 5) + ' 件' : '')
+          + '\n\n削除すると元に戻せません。必要なら先に「エクスポート」でバックアップを取ってください。\n続行しますか？')) return;
+      var remaining = videos.filter(function(v) { return !selectedVideos.has(v); });
+      try {
+        var r = await fetch('/admin/api/videos', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(remaining) });
+        if (r.status === 401) { window.location.href = '/admin'; return; }
+        if (!r.ok) throw new Error('サーバーへの保存に失敗しました（HTTP ' + r.status + '）');
+        selectedVideos.clear();
+        alert(n + ' 件の動画データを削除しました。\n検索への反映（検索用データの再計算）には数十秒〜数分かかります。');
+        loadVideos();
+      } catch (e) {
+        alert('削除に失敗しました: ' + e.message + '\nデータは変更されていません。');
+      }
+    }
+
+    async function deleteAll() {
+      if (!videos.length) { alert('削除する動画データがありません'); return; }
+      if (!confirm('登録されている動画データ ' + videos.length + ' 件をすべて削除します。\n\n削除すると元に戻せず、お客様の画面に動画が表示されなくなります。\n必ず先に「エクスポート」でバックアップを取ってください。\n\n続行しますか？')) return;
+      // 誤操作防止のため、文字の入力で最終確認する
+      var ans = prompt('最終確認です。すべて削除する場合は「削除」と入力してください。');
+      if (ans === null) return;
+      if (ans.trim() !== '削除') { alert('入力が一致しないため、削除を中止しました。'); return; }
+      try {
+        var r = await fetch('/admin/api/videos/delete-all', { method: 'POST', headers: authHeaders(false) });
+        if (r.status === 401) { window.location.href = '/admin'; return; }
+        if (!r.ok) throw new Error('サーバーでの削除に失敗しました（HTTP ' + r.status + '）');
+        selectedVideos.clear();
+        alert('すべての動画データを削除しました。');
+        loadVideos();
+      } catch (e) {
+        alert('一括削除に失敗しました: ' + e.message);
+      }
     }
 
 
@@ -611,14 +699,28 @@
     }
 
     // インポート機能
+    // 同じ動画は「動画ID → URLから取った動画ID → No」の順で照合し、
+    // 既存の動画は内容（文字起こし・タイトル等）が変わっていれば更新、同じなら何もしない。
+    // 以前はNoが同じ動画を「重複」として読み飛ばしていたため、文字起こしを更新しても反映されなかった。
+    function videoKey(v) {
+      var id = String(v.video_id || '').trim();
+      if (id) return 'id:' + id;
+      var url = String(v.url || '');
+      var m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+      if (m) return 'id:' + m[1];
+      if (v.no != null && v.no !== '') return 'no:' + v.no;
+      return null;
+    }
+
+    function sameContent(a, b) {
+      var keys = {};
+      Object.keys(a).concat(Object.keys(b)).forEach(function(k) { keys[k] = true; });
+      return Object.keys(keys).every(function(k) { return JSON.stringify(a[k]) === JSON.stringify(b[k]); });
+    }
+
     async function importData(event) {
       var file = event.target.files[0];
       if (!file) return;
-
-      if (!confirm('インポートすると現在のデータに追加されます。\n続行しますか？')) {
-        event.target.value = '';
-        return;
-      }
 
       var reader = new FileReader();
       reader.onload = async function(e) {
@@ -629,42 +731,69 @@
             throw new Error('JSONファイルの形式が正しくありません（配列である必要があります）');
           }
 
-          // データをマージ（重複チェック）
-          var existingNos = new Set(videos.map(function(v) { return v.no; }));
-          var newVideos = importedData.filter(function(v) {
-            return !existingNos.has(v.no);
+          var index = {};
+          videos.forEach(function(v, i) { var k = videoKey(v); if (k && !(k in index)) index[k] = i; });
+          var maxNo = videos.reduce(function(m, v) { return Math.max(m, parseInt(v.no, 10) || 0); }, 0);
+          var usedNos = new Set(videos.map(function(v) { return String(v.no); }));
+
+          var merged = videos.slice();
+          var added = [], updated = [], transcriptChanged = 0, unchanged = 0, skipped = 0;
+
+          importedData.forEach(function(item) {
+            if (!item || typeof item !== 'object') { skipped++; return; }
+            var k = videoKey(item);
+            if (k && k in index) {
+              var cur = merged[index[k]];
+              // ファイルに無い項目（言語など）は既存の値を残す。Noは既存の番号を維持
+              var next = Object.assign({}, cur, item, { no: cur.no });
+              if (sameContent(cur, next)) { unchanged++; return; }
+              if ((cur.transcript || '') !== (next.transcript || '')) transcriptChanged++;
+              merged[index[k]] = next;
+              updated.push(next);
+            } else {
+              var v = Object.assign({}, item);
+              if (v.no == null || v.no === '' || usedNos.has(String(v.no))) v.no = ++maxNo;
+              else maxNo = Math.max(maxNo, parseInt(v.no, 10) || 0);
+              usedNos.add(String(v.no));
+              merged.push(v);
+              if (k) index[k] = merged.length - 1;
+              added.push(v);
+            }
           });
 
-          if (newVideos.length === 0) {
-            alert('新しいデータがありません（すべて既存データと重複しています）');
+          if (added.length === 0 && updated.length === 0) {
+            alert('変更はありません（' + importedData.length + ' 件すべて、既存データと同じ内容です）');
             event.target.value = '';
             return;
           }
 
-          videos = videos.concat(newVideos);
+          var msg = 'インポート内容の確認\n\n'
+            + '・新規追加: ' + added.length + ' 件\n'
+            + '・更新: ' + updated.length + ' 件（うち文字起こしの変更 ' + transcriptChanged + ' 件）\n'
+            + '・変更なし: ' + unchanged + ' 件\n'
+            + (skipped ? '・読み込めない行: ' + skipped + ' 件（無視します）\n' : '')
+            + '\n保存しますか？（更新された動画は、ファイルの内容で上書きされます）';
+          if (!confirm(msg)) { event.target.value = ''; return; }
 
-          // サーバーに保存
-          var authData = JSON.parse(auth);
-          var authHeader = 'Bearer ' + authData.token;
-          
           var response = await fetch('/admin/api/videos', {
             method: 'PUT',
-            headers: {
-              'Authorization': authHeader,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(videos)
+            headers: authHeaders(true),
+            body: JSON.stringify(merged)
           });
-
+          if (response.status === 401) { window.location.href = '/admin'; return; }
           if (!response.ok) {
-            throw new Error('サーバーへの保存に失敗しました');
+            throw new Error('サーバーへの保存に失敗しました（HTTP ' + response.status + '）');
           }
 
-          alert(newVideos.length + ' 件のデータをインポートしました');
+          alert('インポートしました（追加 ' + added.length + ' 件 / 更新 ' + updated.length + ' 件）。\n検索への反映（検索用データの再計算）には数十秒〜数分かかります。');
           loadVideos();
         } catch (error) {
-          alert('インポートエラー: ' + error.message);
+          alert('インポートエラー: ' + error.message + '\nデータは変更されていません。');
         }
+        event.target.value = '';
+      };
+      reader.onerror = function() {
+        alert('ファイルを読み込めませんでした');
         event.target.value = '';
       };
       reader.readAsText(file);
