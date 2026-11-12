@@ -291,10 +291,17 @@ class AppState:
                     except Exception as e:
                         print(f"⚠️ Failed to save video embeddings cache: {e}")
             
+            # 動画が0件になった場合（一括削除など）は、前回の計算結果・索引を残さない。
+            # 残すと、存在しない動画の索引を検索してエラーになるため。
+            if not self.text_corpus:
+                self.video_embeddings = None
+
             # FAISS インデックス構築（キャッシュ読み込み時・新規計算時ともに毎回実行。
             # インデックス構築自体はO(n)程度で高速なため、キャッシュ対象には含めない）
             if self.video_embeddings is not None and len(self.video_embeddings) > 0:
                 self.video_index = build_optimized_index(self.video_embeddings)
+            else:
+                self.video_index = None
             
             self.video_loaded = True
             print(f"✅ Video data loaded: {len(self.videos)} videos, {len(self.text_corpus)} chunks")
