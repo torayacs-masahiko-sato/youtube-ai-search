@@ -107,6 +107,23 @@ CACHE_DIR                  = DATA_DIR / "cache"
 _MODEL_SUFFIX = "" if EMBEDDING_MODEL == DEFAULT_MODEL_NAME else "__" + re.sub(r"[^A-Za-z0-9_.-]+", "_", EMBEDDING_MODEL)
 VIDEO_EMBEDDINGS_CACHE_PATH = CACHE_DIR / f"video_embeddings{_MODEL_SUFFIX}.npy"
 VIDEO_CHUNK_META_CACHE_PATH = CACHE_DIR / f"video_chunks_meta{_MODEL_SUFFIX}.json"
+# 区切り（チャンク）ごとの計算結果キャッシュ。文章が同じ区切りは再計算しない。
+# 動画を1本更新しても、変わった区切りだけを計算すれば済むようにするため。
+VIDEO_CHUNK_VEC_CACHE_PATH = CACHE_DIR / f"video_chunk_vectors{_MODEL_SUFFIX}.npy"
+VIDEO_CHUNK_KEY_CACHE_PATH = CACHE_DIR / f"video_chunk_keys{_MODEL_SUFFIX}.json"
+# 埋め込み計算の設定
+#  ENCODE_BATCH_SIZE: 一度に計算する件数。大きいほど速いがメモリを使う。e5系は長い文章(最大512トークン)を
+#                     扱うため、64件まとめるとメモリが1GB以上一時的に増えることがあり、小さめにする。
+#  ENCODE_CHECKPOINT: この件数ごとに途中経過を保存（再起動しても続きから再開できるように）。
+ENCODE_BATCH_SIZE = int(os.getenv("ENCODE_BATCH_SIZE", "16"))
+ENCODE_CHECKPOINT = int(os.getenv("ENCODE_CHECKPOINT", "256"))
+# 動画検索で、準備（初回計算）が終わるまで待つ最大秒数。超えたら「準備中」として空の結果を返す。
+VIDEO_PREPARE_WAIT_SECONDS = float(os.getenv("VIDEO_PREPARE_WAIT_SECONDS", "20"))
+
+# 埋め込み計算の排他。検索用データの作り直し（別スレッド）とお客様の検索（本体）が同じモデルを
+# 同時に使わないようにする。作り直しは小分け（ENCODE_BATCH_SIZE件ずつ）でロックを取るので、
+# お客様の検索が待つのは長くても小分け1回分（数秒以内）で済む。
+_encode_lock = threading.Lock()
 
 # 静的ファイルパス（コードと同梱、デプロイ毎にリセットされる）
 frontend_path = BASE_DIR / "frontend"
@@ -140,6 +157,13 @@ class AppState:
         self.faq_loaded = False
         self.model_loaded = False
         self.model_load_seconds: Optional[float] = None
+        # 動画データの再計算要求（インポート・削除・編集のたびにTrue）。計算中に要求が来ても取りこぼさないため
+        self.video_dirty = False
+        self.video_loading = False
+        # 検索が使う動画データ一式（動画一覧・区切り→動画の対応・索引）を1つにまとめたもの。
+        # 再計算中に別スレッドで差し替わっても、検索が「新旧が混ざった状態」を見ないようにするため
+        self.video_snapshot = ([], [], None)
+        self.video_progress: Dict[str, Any] = {}
         
     # ------------------------------------------------------------
     # 読み込み処理（モデル・動画・FAQ）
@@ -180,132 +204,166 @@ class AppState:
             await asyncio.to_thread(self._load_faq_sync)
 
     def _load_video_locked(self):
-        """動画データの遅延ロード（embeddingキャッシュ対応）※ロック取得済みで呼ぶこと"""
-        if not self.video_loaded:
-            self._load_model_sync()
-            print("🔄 Loading video data...")
-            
-            # データ読み込み
-            if DATA_PATH.exists():
-                with open(DATA_PATH, "r", encoding="utf-8") as f:
-                    self.videos = json.load(f)
-            
-            if SYNONYMS_PATH.exists():
+        """動画データの読み込みと検索用データの作成 ※ロック取得済みで呼ぶこと
+
+        ・区切りごとの計算結果をキャッシュし、文章が変わった区切りだけを計算する
+        ・計算の途中経過も保存するので、再起動しても続きから再開できる
+        ・計算中も、検索は直前のデータ（video_snapshot）で続けられる。完成したら一度に差し替える
+        ・計算中に新しい変更が入った場合（video_dirty）は、終わった後にもう一度作り直す
+        """
+        if self.video_loaded and not self.video_dirty:
+            return
+        self._load_model_sync()
+        self.video_loading = True
+        try:
+            while True:
+                self.video_dirty = False
+                self._build_video_index()
+                if not self.video_dirty:
+                    break
+                print("🔁 Video data changed during rebuild; rebuilding again with the latest data")
+        finally:
+            self.video_loading = False
+
+    def _build_video_index(self):
+        t0 = time.time()
+        print("🔄 Loading video data...")
+        videos = []
+        if DATA_PATH.exists():
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                videos = json.load(f)
+        if SYNONYMS_PATH.exists():
+            try:
                 with open(SYNONYMS_PATH, "r", encoding="utf-8") as f:
                     self.synonyms = json.load(f)
-            
-            # data.jsonの内容ハッシュを計算（embeddingキャッシュの整合性チェック用）
-            current_hash = _compute_file_hash(DATA_PATH)
-            
-            # ------------------------------------------------------------
-            # embeddingキャッシュの読み込みを試みる。
-            # data.jsonの内容とモデル名が前回キャッシュ作成時と一致していれば、
-            # 重いembedding計算をスキップしてキャッシュから復元する。
-            # ------------------------------------------------------------
-            cache_loaded = False
-            if VIDEO_EMBEDDINGS_CACHE_PATH.exists() and VIDEO_CHUNK_META_CACHE_PATH.exists():
-                try:
-                    with open(VIDEO_CHUNK_META_CACHE_PATH, "r", encoding="utf-8") as f:
-                        cache_meta = json.load(f)
-                    
-                    hash_match  = cache_meta.get("data_hash") == current_hash
-                    model_match = cache_meta.get("model") == EMBEDDING_MODEL
-                    chunk_settings_match = (
-                        cache_meta.get("chunk_max_chars") == VIDEO_CHUNK_MAX_CHARS and
-                        cache_meta.get("chunk_overlap") == VIDEO_CHUNK_OVERLAP and
-                        cache_meta.get("passage_prefix", "") == PASSAGE_PREFIX
-                    )
-                    
-                    if hash_match and model_match and chunk_settings_match:
-                        self.text_corpus = cache_meta["text_corpus"]
-                        self.video_chunk_map = cache_meta["video_chunk_map"]
-                        self.video_embeddings = np.load(VIDEO_EMBEDDINGS_CACHE_PATH)
-                        cache_loaded = True
-                        print(f"⚡ Video embeddings loaded from cache: {len(self.text_corpus)} chunks (skipped re-encoding)")
-                    else:
-                        reason = []
-                        if not hash_match: reason.append("data.json changed")
-                        if not model_match: reason.append("model changed")
-                        if not chunk_settings_match: reason.append("chunk settings changed")
-                        print(f"♻️ Video embeddings cache invalid ({', '.join(reason)}), recomputing...")
-                except Exception as e:
-                    print(f"⚠️ Failed to load video embeddings cache: {e}")
-                    cache_loaded = False
-            
-            if not cache_loaded:
-                # ------------------------------------------------------------
-                # コーパス構築（チャンク分割対応）
-                # transcriptが長い動画（モデルの最大トークン長128を超える場合）でも
-                # 全体を検索対象にするため、タイトル+説明文+transcriptチャンクの単位で
-                # 複数ベクトルを生成する。同じ動画の複数チャンクは video_chunk_map で
-                # 動画インデックスに紐付けられ、検索時にスコアを集約する。
-                # ------------------------------------------------------------
-                self.text_corpus = []
-                self.video_chunk_map = []
+            except Exception as e:
+                print(f"⚠️ Failed to read synonyms (keeping previous): {e}")
 
-                for v_idx, v in enumerate(self.videos):
-                    title = v.get("title", "") or ""
-                    description = v.get("description", "") or ""
-                    transcript = v.get("transcript", "") or ""
-                    base = f"{title} {description}".strip()
-
-                    if transcript:
-                        text_chunks = chunk_text(transcript)
-                        if not text_chunks:
-                            text_chunks = [""]
-                        for tc in text_chunks:
-                            combined = f"{base} {tc}".strip()
-                            self.text_corpus.append(normalize_text(combined))
-                            self.video_chunk_map.append(v_idx)
-                    else:
-                        # transcriptが無い動画はタイトル+説明文のみで1チャンク
-                        self.text_corpus.append(normalize_text(base))
-                        self.video_chunk_map.append(v_idx)
-
-                # embedding計算（ここが最も重い処理）
-                if self.text_corpus:
-                    self.video_embeddings = self.model.encode(
-                        [PASSAGE_PREFIX + t for t in self.text_corpus] if PASSAGE_PREFIX else self.text_corpus,
-                        show_progress_bar=False,
-                        convert_to_numpy=True,
-                        batch_size=64
-                    )
-                    faiss.normalize_L2(self.video_embeddings)
-                    
-                    # 次回起動時に再利用できるようDiskにキャッシュ保存
-                    try:
-                        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                        np.save(VIDEO_EMBEDDINGS_CACHE_PATH, self.video_embeddings)
-                        with open(VIDEO_CHUNK_META_CACHE_PATH, "w", encoding="utf-8") as f:
-                            json.dump({
-                                "data_hash": current_hash,
-                                "model": EMBEDDING_MODEL,
-                                "chunk_max_chars": VIDEO_CHUNK_MAX_CHARS,
-                                "chunk_overlap": VIDEO_CHUNK_OVERLAP,
-                                "passage_prefix": PASSAGE_PREFIX,
-                                "text_corpus": self.text_corpus,
-                                "video_chunk_map": self.video_chunk_map,
-                                "created_at": datetime.now(timezone.utc).isoformat(),
-                            }, f, ensure_ascii=False)
-                        print(f"💾 Video embeddings cache saved: {len(self.text_corpus)} chunks")
-                    except Exception as e:
-                        print(f"⚠️ Failed to save video embeddings cache: {e}")
-            
-            # 動画が0件になった場合（一括削除など）は、前回の計算結果・索引を残さない。
-            # 残すと、存在しない動画の索引を検索してエラーになるため。
-            if not self.text_corpus:
-                self.video_embeddings = None
-
-            # FAISS インデックス構築（キャッシュ読み込み時・新規計算時ともに毎回実行。
-            # インデックス構築自体はO(n)程度で高速なため、キャッシュ対象には含めない）
-            if self.video_embeddings is not None and len(self.video_embeddings) > 0:
-                self.video_index = build_optimized_index(self.video_embeddings)
+        # ------------------------------------------------------------
+        # コーパス構築（チャンク分割対応）
+        # transcriptが長い動画でも全体を検索対象にするため、タイトル+説明文+transcriptチャンクの単位で
+        # 複数ベクトルを生成する。同じ動画の複数チャンクは chunk_map で動画インデックスに紐付け、
+        # 検索時にスコアを集約する。
+        # ------------------------------------------------------------
+        corpus: List[str] = []
+        chunk_map: List[int] = []
+        for v_idx, v in enumerate(videos):
+            title = v.get("title", "") or ""
+            description = v.get("description", "") or ""
+            transcript = v.get("transcript", "") or ""
+            base = f"{title} {description}".strip()
+            if transcript:
+                text_chunks = chunk_text(transcript) or [""]
+                for tc in text_chunks:
+                    corpus.append(normalize_text(f"{base} {tc}".strip()))
+                    chunk_map.append(v_idx)
             else:
-                self.video_index = None
-            
-            self.video_loaded = True
-            print(f"✅ Video data loaded: {len(self.videos)} videos, {len(self.text_corpus)} chunks")
-    
+                corpus.append(normalize_text(base))
+                chunk_map.append(v_idx)
+
+        embeddings = self._encode_with_chunk_cache(corpus) if corpus else None
+        index = build_optimized_index(embeddings) if embeddings is not None and len(embeddings) > 0 else None
+
+        # まとめて差し替え（検索は video_snapshot を1回読むだけなので、新旧が混ざらない）
+        self.video_snapshot = (videos, chunk_map, index)
+        self.videos = videos
+        self.text_corpus = corpus
+        self.video_chunk_map = chunk_map
+        self.video_embeddings = embeddings
+        self.video_index = index
+        self.video_loaded = True
+        print(f"✅ Video data loaded: {len(videos)} videos, {len(corpus)} chunks ({time.time() - t0:.1f}s)")
+
+    # ---------------- 区切りごとの計算結果キャッシュ ----------------
+    def _chunk_key(self, text: str) -> str:
+        return hashlib.sha1((PASSAGE_PREFIX + "\x1f" + text).encode("utf-8")).hexdigest()
+
+    def _load_chunk_cache(self) -> Dict[str, np.ndarray]:
+        cache: Dict[str, np.ndarray] = {}
+        try:
+            if VIDEO_CHUNK_VEC_CACHE_PATH.exists() and VIDEO_CHUNK_KEY_CACHE_PATH.exists():
+                with open(VIDEO_CHUNK_KEY_CACHE_PATH, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                vecs = np.load(VIDEO_CHUNK_VEC_CACHE_PATH)
+                keys = meta.get("keys", [])
+                if meta.get("model") == EMBEDDING_MODEL and len(keys) == len(vecs):
+                    cache = {k: vecs[i] for i, k in enumerate(keys)}
+                else:
+                    print("♻️ Chunk cache ignored (model changed or file mismatch)")
+        except Exception as e:
+            print(f"⚠️ Failed to read chunk cache (will recompute): {e}")
+            cache = {}
+        # 旧形式のキャッシュ（data.json全体で1つ）があれば取り込む。今回の更新で全件の再計算が起きないように
+        if VIDEO_EMBEDDINGS_CACHE_PATH.exists() and VIDEO_CHUNK_META_CACHE_PATH.exists():
+            try:
+                with open(VIDEO_CHUNK_META_CACHE_PATH, "r", encoding="utf-8") as f:
+                    old = json.load(f)
+                if (old.get("model") == EMBEDDING_MODEL and old.get("passage_prefix", "") == PASSAGE_PREFIX):
+                    old_vecs = np.load(VIDEO_EMBEDDINGS_CACHE_PATH)
+                    old_corpus = old.get("text_corpus", [])
+                    if len(old_corpus) == len(old_vecs):
+                        n = 0
+                        for t, vec in zip(old_corpus, old_vecs):
+                            k = self._chunk_key(t)
+                            if k not in cache:
+                                cache[k] = vec
+                                n += 1
+                        if n:
+                            print(f"📦 Imported {n} vectors from legacy video cache")
+            except Exception as e:
+                print(f"⚠️ Failed to import legacy video cache: {e}")
+        return cache
+
+    def _save_chunk_cache(self, cache: Dict[str, np.ndarray], keep: Optional[set] = None) -> None:
+        """キャッシュを保存（一時ファイルに書いてから置き換えるので、途中で落ちても壊れない）"""
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            keys = [k for k in cache if keep is None or k in keep]
+            if not keys:
+                return
+            vecs = np.stack([cache[k] for k in keys]).astype("float32")
+            tmp_v = VIDEO_CHUNK_VEC_CACHE_PATH.with_suffix(".tmp.npy")
+            tmp_k = VIDEO_CHUNK_KEY_CACHE_PATH.with_suffix(".tmp.json")
+            np.save(tmp_v, vecs)
+            with open(tmp_k, "w", encoding="utf-8") as f:
+                json.dump({"model": EMBEDDING_MODEL, "passage_prefix": PASSAGE_PREFIX, "keys": keys,
+                           "updated_at": datetime.now(timezone.utc).isoformat()}, f)
+            # ベクトル→キーの順に置き換え。間で落ちても件数不一致として読み捨てられ、再計算になるだけ
+            os.replace(tmp_v, VIDEO_CHUNK_VEC_CACHE_PATH)
+            os.replace(tmp_k, VIDEO_CHUNK_KEY_CACHE_PATH)
+        except Exception as e:
+            print(f"⚠️ Failed to save chunk cache: {e}")
+
+    def _encode_with_chunk_cache(self, corpus: List[str]) -> np.ndarray:
+        cache = self._load_chunk_cache()
+        keys = [self._chunk_key(t) for t in corpus]
+        missing: Dict[str, str] = {}
+        for k, t in zip(keys, corpus):
+            if k not in cache and k not in missing:
+                missing[k] = t
+        total = len(missing)
+        print(f"🧮 Video chunks: {len(corpus)} total, {sum(1 for k in keys if k in cache)} from cache, {total} unique to compute")
+        if total:
+            items = sorted(missing.items(), key=lambda kv: len(kv[1]))
+            done = 0
+            t0 = time.time()
+            for start in range(0, total, ENCODE_CHECKPOINT):
+                block = items[start:start + ENCODE_CHECKPOINT]
+                vecs = encode_passages([t for _, t in block])
+                faiss.normalize_L2(vecs)
+                for (k, _), vec in zip(block, vecs):
+                    cache[k] = vec
+                done += len(block)
+                elapsed = time.time() - t0
+                eta = elapsed / done * (total - done)
+                self.video_progress = {"done": done, "total": total, "eta_seconds": round(eta)}
+                print(f"   … {done}/{total} chunks computed ({elapsed:.0f}s elapsed, ~{eta:.0f}s left)")
+                self._save_chunk_cache(cache)          # 途中経過の保存（再起動しても続きから）
+        # 今のデータに無い区切りは削除して保存（ファイルが際限なく大きくならないように）
+        self._save_chunk_cache(cache, keep=set(keys))
+        self.video_progress = {}
+        return np.stack([cache[k] for k in keys]).astype("float32")
+
     def _load_faq_locked(self):
         # FAQデータの遅延ロード ※ロック取得済みで呼ぶこと
         if not self.faq_loaded:
@@ -397,11 +455,7 @@ class AppState:
             
             # FAISS インデックス構築
             if self.faq_corpus:
-                self.faq_embeddings = self.model.encode(
-                    [PASSAGE_PREFIX + t for t in self.faq_corpus] if PASSAGE_PREFIX else self.faq_corpus,
-                    show_progress_bar=False,
-                    convert_to_numpy=True
-                )
+                self.faq_embeddings = encode_passages(self.faq_corpus)
                 faiss.normalize_L2(self.faq_embeddings)
                 self.faq_index = build_optimized_index(self.faq_embeddings)
             
@@ -413,6 +467,18 @@ state = AppState()
 # ============================================
 # ãƒ¦ãƒ¼ãƒ†ã‚£ãƒªãƒ†ã‚£é–¢æ•°
 # ============================================
+
+def encode_passages(texts: List[str]) -> np.ndarray:
+    """文書側（動画の区切り・FAQ）の埋め込み計算。小分けにしてロックを取り、検索を長く待たせない。
+    e5系の場合は先頭に "passage: " を付ける（PASSAGE_PREFIX）。"""
+    out = []
+    for i in range(0, len(texts), ENCODE_BATCH_SIZE):
+        batch = [PASSAGE_PREFIX + t for t in texts[i:i + ENCODE_BATCH_SIZE]]
+        with _encode_lock:
+            out.append(state.model.encode(batch, show_progress_bar=False, convert_to_numpy=True,
+                                          batch_size=ENCODE_BATCH_SIZE))
+    return np.vstack(out).astype("float32") if out else np.zeros((0, 1), dtype="float32")
+
 
 @lru_cache(maxsize=1000)
 def normalize_text(text: str) -> str:
@@ -1055,14 +1121,18 @@ def video_search_core(query: str, language: Optional[str], config: Dict[str, Any
     if verbose:
         print(f"🔍 Video search: query='{query}', threshold={threshold}, config={config}")
 
-    query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
+    with _encode_lock:
+        query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
     faiss.normalize_L2(query_embedding)
 
     # チャンク単位で検索するため、動画数ではなく総チャンク数を基準に取得件数を決定。
     # 同一動画の複数チャンクがヒットしても動画単位に集約するため、多めに取得する。
-    total_chunks = len(state.video_chunk_map)
+    videos, chunk_map, video_index = state.video_snapshot   # 再計算中の差し替えと混ざらないよう、1回だけ読む
+    total_chunks = len(chunk_map)
+    if video_index is None or total_chunks == 0:
+        return []
     k = min(max((offset_limit + 100) * 10, 500), total_chunks)
-    distances, indices = state.video_index.search(query_embedding, k)
+    distances, indices = video_index.search(query_embedding, k)
 
     semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
     title_weight = config.get("title_weight", TITLE_WEIGHT)
@@ -1071,18 +1141,18 @@ def video_search_core(query: str, language: Optional[str], config: Dict[str, Any
     best_score_per_video = {}
     all_scores = []
     for chunk_idx, score in zip(indices[0], distances[0]):
-        if 0 <= chunk_idx < len(state.video_chunk_map):
+        if 0 <= chunk_idx < len(chunk_map):
             all_scores.append(float(score))
-            v_idx = state.video_chunk_map[chunk_idx]
+            v_idx = chunk_map[chunk_idx]
             s_ = float(score)
             if v_idx not in best_score_per_video or s_ > best_score_per_video[v_idx]:
                 best_score_per_video[v_idx] = s_
 
     results = []
     for v_idx, semantic_score in best_score_per_video.items():
-        if not (0 <= v_idx < len(state.videos)):
+        if not (0 <= v_idx < len(videos)):
             continue
-        video = state.videos[v_idx].copy()
+        video = videos[v_idx].copy()
         video_lang = video.get("language", "ja")
         if language != "all" and video_lang != language:
             continue
@@ -1123,9 +1193,20 @@ async def search_videos(
     language: str = Query(None)
 ):
     """動画検索（ページング対応）"""
-    await state.ensure_video_loaded()
+    if not state.video_loaded:
+        # 起動直後など、まだ検索用データが無い場合。計算に時間がかかることがあるので、
+        # 一定時間だけ待ち、間に合わなければ「準備中」として空の結果を返す（お客様を長時間待たせない）
+        task = getattr(state, "_video_prepare_task", None)
+        if task is None or task.done():
+            task = asyncio.ensure_future(state.ensure_video_loaded())
+            state._video_prepare_task = task
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=VIDEO_PREPARE_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            print(f"⏳ Video search requested while preparing (progress: {state.video_progress})")
+            return {"items": [], "has_more": False, "total_visible": 0, "preparing": True}
 
-    if not state.video_index:
+    if not state.video_snapshot[2]:
         return {"items": [], "has_more": False, "total_visible": 0}
 
     config = await get_config()
@@ -1274,7 +1355,8 @@ def faq_search_core(query: str, language: Optional[str], config: Dict[str, Any],
 
     normalized_query = normalize_text(query)
     expanded_query = expand_with_synonyms(normalized_query, state.synonyms, language or "ja")
-    query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
+    with _encode_lock:
+        query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
     faiss.normalize_L2(query_embedding)
 
     k = min(offset_limit + 100, len(state.faq_items_flat))
@@ -1358,8 +1440,14 @@ async def update_synonyms(data: dict):
 
 async def reload_video_data():
     """å‹•ç”»ãƒ‡ãƒ¼ã‚¿ã®ãƒªãƒ­ãƒ¼ãƒ‰"""
-    state.video_loaded = False
-    await state.ensure_video_loaded()
+    # 「作り直してほしい」という印だけ付けて、別スレッドで作り直す。
+    # 作り直しの間も、検索は直前のデータで続ける（以前は完了まで検索を止めていたため、
+    # 計算に時間がかかると検索全体が長時間待たされていた）。
+    state.video_dirty = True
+    try:
+        await asyncio.to_thread(state._load_video_sync)
+    except Exception as e:
+        print(f"❌ Video reload failed (search keeps using previous data): {e}")
 
 @app.post("/admin/api/synonyms/generate", dependencies=[Depends(verify_admin)])
 async def generate_synonyms(background_tasks: BackgroundTasks):
@@ -3368,6 +3456,7 @@ async def eval_status():
         "videos": len(state.videos), "video_chunks": len(state.video_chunk_map), "faqs": len(state.faq_items_flat),
         "memory_mb": _rss_mb(),
         "running": _eval_running,
+        "video_rebuilding": state.video_loading, "video_progress": state.video_progress,
     }
 
 
