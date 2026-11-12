@@ -115,30 +115,38 @@
     @media(max-width:700px){.ht{display:none;}.grid2{grid-template-columns:1fr;}.bt{width:70px;}}
   </style>
   <script src="/admin/static/auth.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Shippori+Mincho+B1:wght@700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/admin/static/theme.css">
 </head>
-<body>
-<header>
-  <div class="hl"><span style="font-size:20px">🔧</span><span class="ht">ACS FAQ Manager</span></div>
-  <nav>
-    <a href="/admin/dashboard">ダッシュボード</a>
-    <a href="/admin/videos">動画データ</a>
-    <a href="/admin/synonyms">同義語</a>
-    <a href="/admin/faq">FAQ編集</a>
-    <a href="/admin/logs" class="active">ログ閲覧</a>
-    <a href="/admin/eval">精度計測</a>
-    <a href="/admin/files">ファイル管理</a>
-    <a href="/admin/apikeys">APIキー</a>
-    <a href="/admin/users">管理者管理</a>
+<body class="ax-has-rail">
+<header class="ax-rail">
+  <a class="ax-brand" href="/admin/dashboard" aria-label="ダッシュボードへ"><svg width="34" height="34" viewBox="0 0 40 40" aria-hidden="true"><path d="M8 6h17l9 9v19H8z" fill="#F2C849"/><path d="M25 6v9h9" fill="none" stroke="#1B2A52" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 10h11.5l6.5 6.5V30H12z" fill="none" stroke="#1B2A52" stroke-width="1.3" stroke-dasharray="2.2 2"/><path d="M8 22l3.5-2v4z" fill="#1B2A52"/><path d="M17 18v9M15 20l2-2 2 2M15 25l2 2 2-2" fill="none" stroke="#1B2A52" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ax-brand-name"><b>サポート検索</b><small>管理画面</small></span></a>
+  <nav aria-label="管理メニュー">
+    <a href="/admin/dashboard"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>ダッシュボード</span></a>
+    <div class="ax-group">コンテンツ</div>
+    <a href="/admin/videos"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.5 9.2v5.6l4.6-2.8z" fill="currentColor" stroke="none"/></svg><span>動画データ</span></a>
+    <a href="/admin/faq"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4H6.5A2.5 2.5 0 0 1 4 13.5z"/><path d="M10 8.2a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9v.3"/><circle cx="12" cy="13.4" r=".6" fill="currentColor"/></svg><span>FAQ編集</span></a>
+    <a href="/admin/synonyms"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h13l-3.5-3.5"/><path d="M20 16H7l3.5 3.5"/></svg><span>同義語</span></a>
+    <a href="/admin/files"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg><span>ファイル管理</span></a>
+    <div class="ax-group">分析</div>
+    <a href="/admin/logs" class="active" aria-current="page"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M21 20H3"/></svg><span>ログ閲覧</span></a>
+    <a href="/admin/eval"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg><span>精度計測</span></a>
+    <div class="ax-group">管理</div>
+    <a href="/admin/users"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6"/><path d="M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/></svg><span>管理者管理</span></a>
+    <a href="/admin/apikeys"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3.5"/><path d="M15 7V3.5"/><path d="M6.5 7h11v4a5.5 5.5 0 0 1-11 0z"/><path d="M12 16.5V21"/></svg><span>APIキー</span></a>
+    <a href="/admin/password"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8"/><path d="M16 7l2.5 2.5"/><path d="M14 9l2 2"/></svg><span>パスワード変更</span></a>
   </nav>
-  <button class="logout" onclick="logout()">ログアウト</button>
+  <button class="ax-logout" onclick="logout()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 16l4-4-4-4"/><path d="M14 12H4"/></svg><span>ログアウト</span></button>
 </header>
 
 <main>
-
+  <div class="page-header"><h1 class="page-title">ログ閲覧</h1><p class="page-desc">お客様がどんな言葉で探し、何を選んだかを確認します。</p></div>
 
   <!-- ===== 検索分析（検索実行ログ） ===== -->
   <div style="margin-bottom:36px;" id="anSec">
-    <div class="sec-title">🔎 検索分析</div>
+    <div class="sec-title">検索分析</div>
     <div class="print-only"><b>サポート検索 分析レポート</b> <span id="anPrintRange"></span></div>
     <div class="an-tool">
       <select id="anPreset" onchange="anPreset()">
@@ -157,14 +165,14 @@
 
   <!-- ===== ① ランキングセクション ===== -->
   <div style="margin-bottom:32px;" id="rankSec">
-    <div class="sec-title">🏆 クリックランキング TOP10</div>
+    <div class="sec-title">クリックランキング TOP10</div>
     <div class="grid2">
       <div class="card">
-        <div class="ct">📝 FAQランキング</div>
+        <div class="ct">FAQランキング</div>
         <ol class="rk-list" id="faqRanking"><li class="rk-empty"><span class="sp"></span>読み込み中...</li></ol>
       </div>
       <div class="card">
-        <div class="ct">🎬 動画ランキング</div>
+        <div class="ct">動画ランキング</div>
         <ol class="rk-list" id="videoRanking"><li class="rk-empty"><span class="sp"></span>読み込み中...</li></ol>
       </div>
     </div>
@@ -172,7 +180,7 @@
 
   <!-- ===== ② 月別ログセクション ===== -->
   <div id="monthSec">
-  <div class="sec-title">📊 月別ログ</div>
+  <div class="sec-title">月別ログ</div>
   <div class="toolbar" style="margin-top:12px;">
     <select id="monthSel" onchange="loadSummary()"><option value="">月を選択...</option></select>
     <button class="btn" onclick="exportCsv()">📥 CSV出力</button>
@@ -320,14 +328,14 @@
   function renderTab(tab) {
     if(!currentData) return;
     var html='<div class="grid2">';
-    html+='<div class="card"><div class="ct">📅 日別クリック数</div>'+renderDays(currentData.days||[])+'</div>';
+    html+='<div class="card"><div class="ct">日別クリック数</div>'+renderDays(currentData.days||[])+'</div>';
     if(tab==='all'){
       var m=merge(currentData.top_faq||[],currentData.top_video||[]);
-      html+='<div class="card"><div class="ct">🔍 人気キーワード（全体）TOP50</div>'+bars(m,'brand')+'</div>';
+      html+='<div class="card"><div class="ct">人気キーワード（全体）TOP50</div>'+bars(m,'brand')+'</div>';
     } else if(tab==='faq'){
-      html+='<div class="card"><div class="ct">🟢 FAQキーワード TOP50</div>'+bars(currentData.top_faq||[],'faq')+'</div>';
+      html+='<div class="card"><div class="ct">FAQキーワード TOP50</div>'+bars(currentData.top_faq||[],'faq')+'</div>';
     } else {
-      html+='<div class="card"><div class="ct">🟡 動画キーワード TOP50</div>'+bars(currentData.top_video||[],'video')+'</div>';
+      html+='<div class="card"><div class="ct">動画キーワード TOP50</div>'+bars(currentData.top_video||[],'video')+'</div>';
     }
     html+='</div>';
     document.getElementById('content').innerHTML=html;
@@ -451,22 +459,22 @@
 
     // 推移グラフ
     html+='<div class="grid2" style="margin-bottom:20px">'
-      +colChart(d.daily.map(function(x){return x.searches;}), d.daily.map(function(x){return x.day;}), '📅 日別 検索回数')
-      +colChart(d.hourly, d.hourly.map(function(_,h){return h+'時';}), '🕐 時間帯別 検索回数（日本時間）')
+      +colChart(d.daily.map(function(x){return x.searches;}), d.daily.map(function(x){return x.day;}), '日別 検索回数')
+      +colChart(d.hourly, d.hourly.map(function(_,h){return h+'時';}), '時間帯別 検索回数（日本時間）')
       +'</div>';
     var wd=['月','火','水','木','金','土','日'];
     html+='<div class="grid2" style="margin-bottom:20px">'
-      +colChart(d.weekday, wd, '📆 曜日別 検索回数（左から月〜日）')
-      +'<div class="card"><div class="ct">🔝 人気キーワード TOP10</div>'
+      +colChart(d.weekday, wd, '曜日別 検索回数（左から月〜日）')
+      +'<div class="card"><div class="ct">人気キーワード TOP10</div>'
       +listTable(d.top_queries.slice(0,10),['キーワード','回数','クリック率'],function(r){
         return '<td>'+esc(r.query)+'</td><td>'+r.count+'</td><td>'+r.click_rate+'%</td>'; },'データなし')+'</div></div>';
 
     // 改善ネタ
     html+='<div class="grid2" style="margin-bottom:20px">'
-      +'<div class="card"><div class="ct">🚫 ヒットなしキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（FAQ・動画の追加／同義語登録の候補）</span></div>'
+      +'<div class="card"><div class="ct">ヒットなしキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（FAQ・動画の追加／同義語登録の候補）</span></div>'
       +listTable(d.zero_hit,['キーワード','回数','FAQ0','動画0'],function(r){
         return '<td>'+esc(r.query)+(r.both_zero?' <span class="pill r">両方0件</span>':'')+'</td><td>'+r.count+'</td><td>'+r.faq_zero+'</td><td>'+r.video_zero+'</td>'; },'ヒットなしの検索はありません 👍')+'</div>'
-      +'<div class="card"><div class="ct">👀 クリックされなかったキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（結果はあるが選ばれない＝内容や並び順の見直し候補）</span></div>'
+      +'<div class="card"><div class="ct">クリックされなかったキーワード <span style="font-size:11px;color:var(--muted);font-weight:400">（結果はあるが選ばれない＝内容や並び順の見直し候補）</span></div>'
       +listTable(d.no_click,['キーワード','未クリック','平均FAQ件数','平均動画件数'],function(r){
         return '<td>'+esc(r.query)+'</td><td><span class="pill y">'+r.no_click+'回</span></td><td>'+(r.avg_faq_hits==null?'-':r.avg_faq_hits)+'</td><td>'+r.avg_video_hits+'</td>'; },'該当なし')+'</div>'
       +'</div>';
@@ -479,8 +487,8 @@
         return '<li class="rk-item"><div class="rk-num '+c+'">'+(i+1)+'</div><div class="rk-body"><div class="rk-title">'+esc(type==='faq'?it.question:it.title)+'</div>'
           +(type==='faq'&&it.category?'<div class="rk-sub">'+esc(it.category)+'</div>':'')+'</div><div class="rk-count">'+it.click_count+'回</div></li>'; }).join('')+'</ol>';
     }
-    html+='<div class="grid2"><div class="card"><div class="ct">📝 期間内 FAQクリック TOP10</div>'+rk(d.faq_ranking,'faq')+'</div>'
-      +'<div class="card"><div class="ct">🎬 期間内 動画クリック TOP10</div>'+rk(d.video_ranking,'video')+'</div></div>';
+    html+='<div class="grid2"><div class="card"><div class="ct">期間内 FAQクリック TOP10</div>'+rk(d.faq_ranking,'faq')+'</div>'
+      +'<div class="card"><div class="ct">期間内 動画クリック TOP10</div>'+rk(d.video_ranking,'video')+'</div></div>';
     document.getElementById('anBody').innerHTML=html;
   }
 

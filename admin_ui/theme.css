@@ -1,0 +1,465 @@
+/* =====================================================================
+   サポート検索 管理画面 共通デザイン（theme.css）
+   コンセプト: パターン用紙と採寸メジャー
+     - 左メニュー: 藍染めデニム地＋右端にメジャーの目盛り。開いているページに型紙の「ノッチ（合印）」
+     - 作業エリア: 方眼のパターン用紙のような薄い格子
+     - 見出し: しっぽり明朝 / 本文: BIZ UDPゴシック（ユニバーサルデザイン書体）
+   各ページの<style>より後に読み込み、見た目だけを上書きする（画面の動き・IDは変更しない）。
+   色や余白を変えたいときは、下の :root の値を変えれば全ページに反映される。
+   ===================================================================== */
+
+:root {
+  --ax-indigo: #1B2A52;        /* 藍（メニュー地） */
+  --ax-indigo-2: #24376A;      /* 藍・明（メニューの選択中） */
+  --ax-chalk: #F2C849;         /* 採寸チョーク（目盛り・ノッチ・強調） */
+  --ax-blue: #0A5BD3;          /* 東レブルー（操作） */
+  --ax-blue-dark: #0846A6;
+  --ax-blue-tint: #E8F0FD;
+  --ax-ink: #182340;           /* 文字 */
+  --ax-muted: #5A6683;         /* 補足文字 */
+  --ax-paper: #F4F6FA;         /* 用紙 */
+  --ax-surface: #FFFFFF;       /* 作業面 */
+  --ax-line: #DCE3EE;          /* 罫線 */
+  --ax-line-strong: #C3CEDF;
+  --ax-ok: #17805A;
+  --ax-ok-tint: #E4F4EC;
+  --ax-warn: #9A6400;
+  --ax-warn-tint: #FFF6DC;
+  --ax-ng: #B93A2B;
+  --ax-ng-tint: #FCEBE8;
+  --ax-rail-w: 236px;
+  --ax-radius-l: 14px;         /* 大きな面（カード・ダイアログ） */
+  --ax-radius-m: 8px;          /* 操作部品（ボタン・入力） */
+  --ax-font: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --ax-font-title: "Shippori Mincho B1", "Hiragino Mincho ProN", "Yu Mincho", serif;
+
+  /* 各ページが使っている既存の変数も、同じ色に揃える */
+  --brand: var(--ax-blue);
+  --brand-dark: var(--ax-blue-dark);
+  --brand-light: var(--ax-blue-tint);
+  --text: var(--ax-ink);
+  --text-muted: var(--ax-muted);
+  --muted: var(--ax-muted);
+  --bg: var(--ax-paper);
+  --border: var(--ax-line);
+  --white: var(--ax-surface);
+  --success: var(--ax-ok);
+  --danger: var(--ax-ng);
+  --warning: var(--ax-warn);
+  --shadow: 0 1px 2px rgba(24, 35, 64, .05);
+  --shadow-sm: 0 1px 2px rgba(24, 35, 64, .05);
+  --shadow-md: 0 8px 24px rgba(24, 35, 64, .08);
+}
+
+/* ---------------------------------------------------------------------
+   土台：用紙（方眼）と文字
+   --------------------------------------------------------------------- */
+html body {
+  font-family: var(--ax-font);
+  color: var(--ax-ink);
+  background-color: var(--ax-paper);
+  /* 5mm方眼＋25mmごとに少し濃い線（パターン用紙） */
+  background-image:
+    linear-gradient(rgba(27, 42, 82, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(27, 42, 82, .045) 1px, transparent 1px),
+    linear-gradient(rgba(27, 42, 82, .025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(27, 42, 82, .025) 1px, transparent 1px);
+  background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+  background-attachment: fixed;
+  font-feature-settings: "palt" 0;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+html body.ax-has-rail { padding-left: var(--ax-rail-w); }
+body input, body select, body textarea, body button { font-family: inherit; }
+body ::selection { background: var(--ax-chalk); color: var(--ax-ink); }
+body a { color: var(--ax-blue); }
+
+/* キーボード操作時の位置を必ず見えるように */
+body :focus-visible {
+  outline: 3px solid var(--ax-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------------------------------------------------------------------
+   左メニュー（藍のデニム地＋メジャー）— このデザインの見せ場
+   --------------------------------------------------------------------- */
+html body header.ax-rail {
+  position: fixed; inset: 0 auto 0 0; z-index: 900;
+  width: var(--ax-rail-w); height: 100vh;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 0; padding: 22px 0 18px 0;
+  color: #E6EBF7;
+  background-color: var(--ax-indigo);
+  /* 綾織りのような細い斜線 */
+  background-image:
+    repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.12));
+  box-shadow: none;
+  border: 0;
+}
+/* 右端のメジャー：1目盛り6px、5目盛りごとに長い線 */
+html body header.ax-rail::after {
+  content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 16px;
+  background-color: #233562;
+  background-image:
+    repeating-linear-gradient(180deg, var(--ax-chalk) 0 1px, transparent 1px 30px),
+    repeating-linear-gradient(180deg, rgba(242, 200, 73, .55) 0 1px, transparent 1px 6px);
+  background-size: 12px 100%, 6px 100%;
+  background-position: right top, right top;
+  background-repeat: repeat-y;
+  border-left: 1px solid rgba(255,255,255,.08);
+  pointer-events: none;
+}
+html body header.ax-rail .ax-brand {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 28px 22px 22px; margin-bottom: 6px;
+  color: #fff; text-decoration: none;
+  border-bottom: 1px dashed rgba(255,255,255,.18);   /* 縫い目のような破線 */
+}
+html body header.ax-rail .ax-brand svg { flex: 0 0 34px; }
+html body header.ax-rail .ax-brand-name { display: flex; flex-direction: column; line-height: 1.3; }
+html body header.ax-rail .ax-brand-name b { font-family: var(--ax-font-title); font-size: 17px; font-weight: 700; letter-spacing: .04em; }
+html body header.ax-rail .ax-brand-name small { font-size: 11px; color: #AEB9D6; letter-spacing: .08em; }
+
+html body header.ax-rail nav {
+  display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto;
+  padding: 6px 28px 10px 12px; margin: 0;
+}
+html body header.ax-rail nav .ax-group {
+  font-size: 11px; color: #93A0C3; letter-spacing: .1em;
+  padding: 16px 12px 6px; font-weight: 700;
+}
+html body header.ax-rail nav a {
+  position: relative;
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 12px; border-radius: var(--ax-radius-m);
+  color: #DDE3F3; font-size: 14px; font-weight: 400; text-decoration: none; white-space: nowrap;
+  background: transparent; transition: background-color .15s ease, color .15s ease;
+}
+html body header.ax-rail nav a svg { flex: 0 0 18px; opacity: .8; }
+html body header.ax-rail nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+html body header.ax-rail nav a.active {
+  background: var(--ax-indigo-2); color: #fff; font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+html body header.ax-rail nav a.active svg { opacity: 1; color: var(--ax-chalk); }
+/* ノッチ（合印）：選択中の行からメジャーへ向かう三角の切り込み */
+html body header.ax-rail nav { position: relative; z-index: 1; }
+html body header.ax-rail nav a.active::after {
+  content: ""; position: absolute; right: -24px; top: 50%; transform: translateY(-50%);
+  border-style: solid; border-width: 7px 0 7px 10px;
+  border-color: transparent transparent transparent var(--ax-chalk);
+}
+html body header.ax-rail .ax-logout {
+  margin: 10px 30px 0 22px; padding: 9px 12px;
+  display: flex; align-items: center; gap: 10px;
+  background: transparent; color: #C5CDE3; border: 1px solid rgba(255,255,255,.18);
+  border-radius: var(--ax-radius-m); font-size: 13px; cursor: pointer;
+}
+html body header.ax-rail .ax-logout:hover { background: rgba(255,255,255,.08); color: #fff; }
+
+/* ---------------------------------------------------------------------
+   作業エリア
+   --------------------------------------------------------------------- */
+html body.ax-has-rail main {
+  max-width: 1240px; margin: 0 auto; padding: 40px 44px 56px;
+}
+html body.ax-has-rail footer {
+  background: transparent; color: var(--ax-muted); border: 0;
+  font-size: 11px; text-align: center; padding: 18px 24px 26px;
+}
+
+/* ページ見出し（ページによってクラス名が違うため、まとめて指定） */
+html body .page-title,
+html body .toolbar-title,
+html body main > .sec-title:first-child,
+html body main > div:first-child > .sec-title:first-child {
+  font-family: var(--ax-font-title);
+  font-size: 28px; font-weight: 700; letter-spacing: .03em; line-height: 1.35;
+  color: var(--ax-ink);
+}
+html body .page-header { margin-bottom: 28px; }
+html body .page-desc { color: var(--ax-muted); font-size: 14px; margin-top: 6px; }
+html body .sec-title {
+  font-family: var(--ax-font-title); font-weight: 700; color: var(--ax-ink);
+  font-size: 20px; letter-spacing: .03em; margin: 8px 0 14px; padding: 0; border: 0;
+}
+html body .toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  background: transparent; border: 0; box-shadow: none; padding: 0; margin-bottom: 22px;
+}
+html body .toolbar .toolbar-title { margin-right: auto; }
+
+/* 面（カード） */
+html body .card,
+html body .settings-section,
+html body .table-card,
+html body .table-container {
+  background: var(--ax-surface);
+  border: 1px solid var(--ax-line);
+  border-radius: var(--ax-radius-l);
+  box-shadow: var(--shadow);
+}
+html body .card .ct,
+html body .card-title {
+  font-weight: 700; color: var(--ax-ink); letter-spacing: .02em;
+}
+html body .help, html body .form-hint, html body .card-desc, html body .settings-desc { color: var(--ax-muted); }
+
+/* 統計の数字 */
+html body .stats { gap: 12px; }
+html body .stat {
+  background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: 12px;
+  box-shadow: none; padding: 16px 18px;
+}
+html body .stat .sl { color: var(--ax-muted); font-size: 12px; }
+html body .stat .sv { font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 700; letter-spacing: -.01em; }
+
+/* ---------------------------------------------------------------------
+   操作部品
+   --------------------------------------------------------------------- */
+html body .btn,
+html body button.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 7px 14px;
+  border: 1px solid var(--ax-line-strong); border-radius: var(--ax-radius-m);
+  background: var(--ax-surface); color: var(--ax-ink);
+  font-size: 13px; font-weight: 700; line-height: 1.2; letter-spacing: .02em;
+  box-shadow: 0 1px 0 rgba(24, 35, 64, .04);
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+  cursor: pointer;
+}
+html body .btn:hover:not(:disabled) { border-color: var(--ax-blue); color: var(--ax-blue); background: #FAFCFF; }
+html body .btn-primary,
+html body .btn.pri,
+html body .btn-login {
+  background: var(--ax-blue); border-color: var(--ax-blue); color: #fff;
+}
+html body .btn-primary:hover:not(:disabled),
+html body .btn.pri:hover:not(:disabled),
+html body .btn-login:hover:not(:disabled) { background: var(--ax-blue-dark); border-color: var(--ax-blue-dark); color: #fff; }
+html body .btn-success { background: var(--ax-ok); border-color: var(--ax-ok); color: #fff; }
+html body .btn-success:hover:not(:disabled) { background: #11674A; border-color: #11674A; color: #fff; }
+html body .btn-danger { background: var(--ax-surface); color: var(--ax-ng); border-color: #EBC3BC; }
+html body .btn-danger:hover:not(:disabled) { background: var(--ax-ng-tint); border-color: var(--ax-ng); color: var(--ax-ng); }
+html body .btn-sm, html body .btn.sm { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+html body .btn:disabled, html body button:disabled { opacity: .45; cursor: not-allowed; }
+
+html body input[type="text"], html body input[type="search"], html body input[type="password"],
+html body input[type="number"], html body input[type="date"], html body input[type="email"],
+html body select, html body textarea, html body .form-input, html body .form-textarea, html body .search-box {
+  border: 1px solid var(--ax-line-strong); border-radius: var(--ax-radius-m);
+  background-color: var(--ax-surface); color: var(--ax-ink);
+  font-size: 14px; transition: border-color .15s ease, box-shadow .15s ease;
+}
+html body input:focus, html body select:focus, html body textarea:focus {
+  outline: none; border-color: var(--ax-blue); box-shadow: 0 0 0 3px rgba(10, 91, 211, .18);
+}
+html body .form-label { font-weight: 700; color: var(--ax-ink); font-size: 13px; }
+html body input[type="checkbox"], html body input[type="radio"], html body input[type="range"] { accent-color: var(--ax-blue); }
+
+/* 表 */
+html body table { border-collapse: separate; border-spacing: 0; }
+html body th {
+  background: #F1F4F9; color: var(--ax-muted); font-size: 12px; font-weight: 700;
+  letter-spacing: .04em; text-transform: none; border-bottom: 1px solid var(--ax-line);
+}
+html body td { border-bottom: 1px solid #E8EDF4; }
+html body tbody tr:hover td { background: #F7F9FD; }
+html body tr.selected td { background: var(--ax-blue-tint); }
+
+/* 小さなラベル */
+html body .badge, html body .tag, html body .lang-badge, html body .pill {
+  border-radius: 999px; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+}
+html body .btn { white-space: nowrap; }
+/* ページ見出しの直後のセクション見出しは、少し小さく */
+html body .page-header + div .sec-title:first-child,
+html body .page-header + div > .sec-title { font-size: 20px; }
+
+/* タブ */
+html body .tabs, html body .lang-tabs { gap: 4px; border-bottom: 1px solid var(--ax-line); }
+html body .tab, html body .lang-tab {
+  border: 0; background: transparent; color: var(--ax-muted); font-weight: 700;
+  border-radius: 0; border-bottom: 3px solid transparent; padding: 10px 14px;
+}
+html body .tab.active, html body .lang-tab.active { color: var(--ax-ink); border-bottom-color: var(--ax-chalk); background: transparent; }
+
+/* ダイアログ */
+html body .modal-overlay, html body .modal, html body .progress-overlay {
+  background: rgba(24, 35, 64, .45);
+  backdrop-filter: blur(2px);
+}
+html body .modal-box, html body .modal-content, html body .modal-dialog, html body .progress-box {
+  border-radius: var(--ax-radius-l); border: 1px solid var(--ax-line);
+  box-shadow: 0 24px 60px rgba(24, 35, 64, .25);
+}
+html body .modal-header { border-bottom: 1px dashed var(--ax-line-strong); }
+html body .modal-title { font-weight: 700; }
+
+/* お知らせ・エラー */
+html body .errbox, html body .error, html body .alert-error { background: var(--ax-ng-tint); color: var(--ax-ng); border-color: #F0C9C1; border-radius: var(--ax-radius-m); }
+html body .an-note, html body .warn, html body .alert-warning { background: var(--ax-warn-tint); color: var(--ax-warn); border-color: #F2DB97; border-radius: var(--ax-radius-m); }
+
+/* トグルスイッチ（ダッシュボード設定） */
+html body .toggle-switch.active, html body .toggle-switch.on { background: var(--ax-blue); }
+
+/* ---------------------------------------------------------------------
+   ダッシュボード
+   --------------------------------------------------------------------- */
+html body .ax-hello { margin-bottom: 30px; }
+html body .ax-hello h1 { font-family: var(--ax-font-title); font-size: 30px; font-weight: 700; letter-spacing: .03em; line-height: 1.35; }
+html body .ax-hello p { color: var(--ax-muted); margin-top: 6px; }
+html body .ax-section { margin-bottom: 30px; }
+html body .ax-section > h2 {
+  font-size: 13px; font-weight: 700; color: var(--ax-muted); letter-spacing: .1em;
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+/* 見出しの後ろに縫い目（破線） */
+html body .ax-section > h2::after { content: ""; flex: 1; border-top: 1px dashed var(--ax-line-strong); }
+html body .ax-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+html body a.ax-tile {
+  position: relative; display: grid; grid-template-columns: 44px 1fr; gap: 4px 14px; align-items: start;
+  padding: 18px 20px; text-decoration: none; color: var(--ax-ink);
+  background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: var(--ax-radius-l);
+  transition: border-color .15s ease, transform .15s ease;
+}
+html body a.ax-tile:hover { border-color: var(--ax-blue); }
+html body a.ax-tile .ax-tile-icon {
+  grid-row: span 2; width: 44px; height: 44px; border-radius: 12px;
+  display: grid; place-items: center; background: var(--ax-blue-tint); color: var(--ax-blue);
+}
+html body a.ax-tile.ax-tile-indigo .ax-tile-icon { background: #E9ECF6; color: var(--ax-indigo); }
+html body a.ax-tile strong { font-size: 15px; font-weight: 700; }
+html body a.ax-tile span.ax-tile-desc { font-size: 12.5px; color: var(--ax-muted); line-height: 1.6; }
+html body .settings-section { padding: 6px 24px 10px; margin-top: 8px; }
+html body .settings-row { border-bottom: 1px solid #EEF1F6; }
+html body .settings-row:last-child { border-bottom: 0; }
+html body .settings-label { font-weight: 700; }
+
+/* ---------------------------------------------------------------------
+   スマホ・タブレット幅：メニューを上部の横スクロールに
+   --------------------------------------------------------------------- */
+@media (max-width: 900px) {
+  html body.ax-has-rail { padding-left: 0; }
+  html body header.ax-rail {
+    position: sticky; top: 0; width: 100%; height: auto; flex-direction: row; align-items: center;
+    padding: 8px 12px; gap: 6px; overflow: hidden;
+  }
+  html body header.ax-rail::after {
+    top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 7px; border-left: 0;
+    background-image:
+      repeating-linear-gradient(90deg, var(--ax-chalk) 0 1px, transparent 1px 30px),
+      repeating-linear-gradient(90deg, rgba(242, 200, 73, .55) 0 1px, transparent 1px 6px);
+    background-size: 100% 7px, 100% 4px; background-repeat: repeat-x; background-position: left bottom;
+  }
+  html body header.ax-rail .ax-brand { padding: 0 8px 0 0; margin: 0; border: 0; }
+  html body header.ax-rail .ax-brand-name { display: none; }
+  html body header.ax-rail nav { flex-direction: row; overflow-x: auto; padding: 0 0 6px; flex: 1; scrollbar-width: none; }
+  html body header.ax-rail nav .ax-group { display: none; }
+  html body header.ax-rail nav a { padding: 7px 10px; font-size: 13px; }
+  html body header.ax-rail nav a svg { display: none; }
+  html body header.ax-rail nav a.active::after { display: none; }
+  html body header.ax-rail nav a.active { box-shadow: inset 0 -3px 0 var(--ax-chalk); }
+  html body header.ax-rail .ax-logout { margin: 0 0 6px; padding: 6px 10px; font-size: 12px; }
+  html body header.ax-rail .ax-logout span { display: none; }
+  html body.ax-has-rail main { padding: 24px 16px 40px; }
+  html body .page-title, html body .toolbar-title { font-size: 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html body * { transition: none !important; animation: none !important; }
+}
+
+@media print {
+  html body { background: #fff; padding-left: 0 !important; }
+  html body header.ax-rail { display: none !important; }
+}
+
+/* ダッシュボードの設定欄の見出し */
+html body .ax-settings-head { padding: 18px 0 8px; border-bottom: 1px dashed var(--ax-line-strong); margin-bottom: 4px; }
+html body .ax-settings-head h2 { font-family: var(--ax-font-title); font-size: 20px; font-weight: 700; letter-spacing: .03em; }
+html body .ax-settings-head p { color: var(--ax-muted); font-size: 13px; margin-top: 2px; }
+
+/* ---------------------------------------------------------------------
+   ログイン画面：藍の地にグレーディングされた型紙。1回だけ線を描く演出
+   --------------------------------------------------------------------- */
+html body.ax-login {
+  display: block; padding: 0; min-height: 100vh;
+  background-color: var(--ax-paper);
+}
+html body.ax-login .ax-login-wrap {
+  min-height: 100vh; display: grid; grid-template-columns: minmax(360px, 1.05fr) minmax(380px, 1fr);
+}
+html body.ax-login .ax-login-side {
+  position: relative; overflow: hidden; color: #E6EBF7;
+  background-color: var(--ax-indigo);
+  background-image:
+    repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.14));
+  display: flex; flex-direction: column; justify-content: space-between; padding: 44px 48px 64px;
+}
+/* 下端のメジャー */
+html body.ax-login .ax-login-side::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 22px;
+  background-color: #233562;
+  background-image:
+    repeating-linear-gradient(90deg, var(--ax-chalk) 0 1px, transparent 1px 30px),
+    repeating-linear-gradient(90deg, rgba(242, 200, 73, .55) 0 1px, transparent 1px 6px);
+  background-size: 100% 16px, 100% 8px; background-repeat: repeat-x; background-position: left top;
+  border-top: 1px solid rgba(255,255,255,.1);
+}
+html body.ax-login .ax-login-mark { display: flex; align-items: center; gap: 12px; }
+html body.ax-login .ax-login-mark span { display: flex; flex-direction: column; font-family: var(--ax-font-title); font-weight: 700; font-size: 19px; color: #fff; letter-spacing: .05em; line-height: 1.3; }
+html body.ax-login .ax-login-mark small { font-family: var(--ax-font); font-weight: 400; font-size: 11px; color: #AEB9D6; letter-spacing: .1em; }
+html body.ax-login .ax-login-art { width: min(78%, 420px); align-self: center; margin: 24px 0; overflow: visible; }
+html body.ax-login .ax-grade { fill: none; stroke: var(--ax-chalk); stroke-width: 1.4; stroke-dasharray: 1; stroke-dashoffset: 1;
+  animation: ax-draw 2.4s cubic-bezier(.6,.05,.3,1) forwards; vector-effect: non-scaling-stroke; }
+html body.ax-login .ax-g0 { stroke: #fff; stroke-width: 1.8; }
+html body.ax-login .ax-g1 { opacity: .75; animation-delay: .25s; stroke-dasharray: .012 .008; stroke-dashoffset: 0; animation-name: ax-fade; }
+html body.ax-login .ax-g2 { opacity: .5;  animation-delay: .45s; stroke-dasharray: .012 .008; stroke-dashoffset: 0; animation-name: ax-fade; }
+html body.ax-login .ax-g3 { opacity: .3;  animation-delay: .65s; stroke-dasharray: .012 .008; stroke-dashoffset: 0; animation-name: ax-fade; }
+html body.ax-login .ax-notch { stroke: #fff; stroke-width: 2; stroke-linecap: round; fill: none; opacity: 0; animation: ax-fade 1s 1.6s forwards; }
+html body.ax-login .ax-grain, html body.ax-login .ax-dart { fill: none; stroke: #9FB0D8; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 1; stroke-dashoffset: 1; animation: ax-draw 1.6s 1.1s ease forwards; }
+@keyframes ax-draw { to { stroke-dashoffset: 0; } }
+@keyframes ax-fade { from { opacity: 0; } }
+html body.ax-login .ax-g1, html body.ax-login .ax-g2, html body.ax-login .ax-g3 { animation-duration: 1.2s; animation-fill-mode: backwards; }
+html body.ax-login .ax-login-copy { font-family: var(--ax-font-title); font-size: 20px; line-height: 1.8; letter-spacing: .04em; color: #fff; max-width: 26em; }
+
+html body.ax-login .login-card {
+  align-self: center; justify-self: center; width: 100%; max-width: 400px; margin: 48px 32px;
+  background: transparent; box-shadow: none; border-radius: 0; padding: 0;
+}
+html body.ax-login .login-card .title { font-family: var(--ax-font-title); font-size: 30px; font-weight: 700; text-align: left; color: var(--ax-ink); letter-spacing: .04em; }
+html body.ax-login .login-card .subtitle { text-align: left; color: var(--ax-muted); margin: 6px 0 28px; font-size: 14px; }
+html body.ax-login .login-card .form-input { height: 46px; font-size: 15px; }
+html body.ax-login .login-card .btn-login { height: 48px; border-radius: var(--ax-radius-m); font-size: 15px; font-weight: 700; letter-spacing: .08em; }
+html body.ax-login .login-card .help-text { text-align: left; color: var(--ax-muted); }
+html body.ax-login .login-card .link-btn { color: var(--ax-blue); }
+html body.ax-login footer { position: static; color: var(--ax-muted); background: transparent; text-align: right; padding: 0 28px 18px; margin-top: -40px; font-size: 11px; }
+
+@media (max-width: 860px) {
+  html body.ax-login .ax-login-wrap { grid-template-columns: 1fr; }
+  html body.ax-login .ax-login-side { padding: 22px 20px 38px; min-height: 0; }
+  html body.ax-login .ax-login-art, html body.ax-login .ax-login-copy { display: none; }
+  html body.ax-login .login-card { margin: 32px auto; padding: 0 16px; }
+  html body.ax-login footer { text-align: center; margin-top: 0; }
+}
+html body select { min-height: 36px; padding: 6px 10px; }
+/* 藍のメニュー上では、フォーカス枠をチョーク色に（青だと見えにくいため） */
+html body header.ax-rail :focus-visible { outline-color: var(--ax-chalk); }
+@media (max-width: 900px) {
+  /* 表は横スクロールで見る（画面からはみ出さないように） */
+  html body main table { display: block; overflow-x: auto; max-width: 100%; }
+  html body .grid2 { grid-template-columns: 1fr !important; }
+  html body .an-tool, html body .toolbar { flex-wrap: wrap; }
+  html body .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+html body .grid2 > * { min-width: 0; }
+@media (max-width: 900px) {
+  html body .filter-bar { flex-wrap: wrap; }
+  html body .filter-bar > * { max-width: 100%; }
+}

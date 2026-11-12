@@ -30,11 +30,6 @@
     });
   };
 
-  // ナビのリンク数が増えたため、狭い画面でも全リンクが収まるよう余白を詰める
-  var st = document.createElement('style');
-  st.textContent = 'nav { min-width: 0; } nav a { padding: 7px 8px !important; font-size: 12.5px !important; }';
-  document.head.appendChild(st);
-
   // 3) パスワード変更を促すバナー
   document.addEventListener('DOMContentLoaded', function () {
     if (location.pathname.indexOf('/admin/password') === 0) return;
