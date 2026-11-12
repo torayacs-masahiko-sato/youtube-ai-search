@@ -506,10 +506,23 @@ def expand_with_synonyms(query: str, synonyms: Dict[str, Any], language: str = "
     # 言語別の同義語辞書を取得
     lang_synonyms = synonyms.get(language, {}) if isinstance(synonyms, dict) else {}
     
-    # 同義語展開
+    # 同義語展開（両方向）
+    #  ・検索語に「登録語」が含まれる → その同義語を追加（例: プリンタ → プリンター）
+    #  ・検索語に「同義語」が含まれる → 登録語を追加（例: プリンター → プリンタ）
+    # 以前はお客様画面(JavaScript)でも同じ展開をしていたが、辞書の読み込みに失敗していたため、
+    # サーバー側に一本化した。展開後の文字列は「意味検索」にだけ使い、
+    # キーワード一致・完全一致の判定には元の検索語を使う（同義語が混ざると完全一致が効かなくなるため）。
+    q_lower = query.lower()
     for term, syns in lang_synonyms.items():
-        if term.lower() in query.lower():
-            expanded_terms.extend(syns)
+        if not isinstance(syns, list):
+            continue
+        if term and term.lower() in q_lower:
+            for s_ in syns:
+                if s_ and s_ not in expanded_terms:
+                    expanded_terms.append(s_)
+        for s_ in syns:
+            if s_ and s_.lower() in q_lower and term not in expanded_terms:
+                expanded_terms.append(term)
     
     return " ".join(expanded_terms)
 
@@ -974,6 +987,7 @@ async def lifespan(app: FastAPI):
     # 検索モデル・データを裏で先に読み込む（最初のお客様が数十秒〜数分待たされるのを防ぐ。
     # モデル切り替え直後は埋め込みの再計算に数分かかるため特に重要）。
     # 別スレッドで動くので、起動完了・ヘルスチェックは待たせない。WARMUP_ON_START=0 で無効化できる。
+    reload_synonyms()
     if os.getenv("WARMUP_ON_START", "1") != "0":
         async def _warmup():
             try:
@@ -1015,7 +1029,7 @@ async def health_check():
         "faq_items_count": len(state.faq_items_flat),
         "faq_corpus_count": len(state.faq_corpus),
         "faq_index_available": state.faq_index is not None,
-        "video_items_count": len(state.video_items_flat),
+        "video_items_count": len(state.videos),
     }
 
 # ============================================
@@ -1303,6 +1317,20 @@ def faq_search_core(query: str, language: Optional[str], config: Dict[str, Any],
 # ç®¡ç†API - ãƒ‡ãƒ¼ã‚¿ç·¨é›†
 # ============================================
 
+def reload_synonyms() -> None:
+    """同義語辞書をファイルから読み直し、検索に即反映する（動画・FAQの再計算は不要）"""
+    try:
+        if SYNONYMS_PATH.exists():
+            with open(SYNONYMS_PATH, "r", encoding="utf-8") as f:
+                state.synonyms = json.load(f)
+        else:
+            state.synonyms = {}
+        print("🔁 Synonyms reloaded")
+    except Exception as e:
+        # 読み直しに失敗しても、直前の辞書のまま検索は続ける
+        print(f"⚠️ Failed to reload synonyms (keeping previous): {e}")
+
+
 @app.get("/admin/api/synonyms", dependencies=[Depends(verify_admin)])
 async def get_synonyms():
     """åŒç¾©èªžè¾žæ›¸å–å¾—"""
@@ -1317,7 +1345,7 @@ async def update_synonyms(data: dict):
     print(f"💾 Saving synonyms: {len(data)} terms")
     with open(SYNONYMS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    
+    reload_synonyms()
     print(f"✅ Synonyms saved successfully")
     return {"status": "ok", "count": len(data)}
 
@@ -1345,7 +1373,7 @@ async def generate_synonyms(background_tasks: BackgroundTasks):
     
     with open(SYNONYMS_PATH, "w", encoding="utf-8") as f:
         json.dump(synonym_map, f, ensure_ascii=False, indent=2)
-    
+    reload_synonyms()
     background_tasks.add_task(reload_video_data)
     return {"status": "ok", "count": len(synonym_map)}
 
@@ -1361,6 +1389,7 @@ async def update_synonym_term(term: str, values: List[str], background_tasks: Ba
     
     with open(SYNONYMS_PATH, "w", encoding="utf-8") as f:
         json.dump(synonyms, f, ensure_ascii=False, indent=2)
+    reload_synonyms()
     
     background_tasks.add_task(reload_video_data)
     return {"status": "ok", "term": term}
@@ -1379,7 +1408,7 @@ async def delete_synonym_term(term: str):
     
     with open(SYNONYMS_PATH, "w", encoding="utf-8") as f:
         json.dump(synonyms, f, ensure_ascii=False, indent=2)
-    
+    reload_synonyms()
     print(f"✅ Synonym deleted successfully")
     return {"status": "ok", "term": term}
 
@@ -2495,7 +2524,16 @@ async def export_logs():
     if not SEARCH_LOG_PATH.exists():
         raise HTTPException(404, "No logs found")
     
-    csv_data = SEARCH_LOG_PATH.read_text(encoding="utf-8")
+    # 1セルずつ読み直し、数式扱いされる値を無害化してから出力する（xl_safe参照）
+    try:
+        with open(SEARCH_LOG_PATH, "r", encoding="utf-8", newline="") as f:
+            rows = list(csv.reader(f))
+    except Exception as e:
+        print(f"❌ Failed to read logs for export: {e}")
+        raise HTTPException(500, "ログファイルの読み込みに失敗しました")
+    buf = io.StringIO()
+    csv.writer(buf).writerows([[xl_safe(c) for c in row] for row in rows])
+    csv_data = buf.getvalue()
     
     # Excelで開いたときに日本語が文字化けしないよう、UTF-8 BOMを付与する
     bom = "\ufeff"
@@ -2995,6 +3033,15 @@ async def analytics_overview(date_from: str = Query("", alias="from"), date_to: 
     """検索分析の集計（期間指定。省略時は直近30日）"""
     return await build_search_analytics(date_from, date_to)
 
+def xl_safe(v):
+    """Excel・CSVで「=」「+」「-」「@」等で始まる文字列が数式として扱われるのを防ぐ。
+    お客様の検索語は自由入力なので、悪意ある値（例: =HYPERLINK(...)）が数式として動かないよう、
+    先頭に ' を付けて文字列として保存する。数値・日付はそのまま。"""
+    if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
 def build_report_xlsx(a: Dict[str, Any]) -> bytes:
     """検索分析をExcelレポート（複数シート）にして返す。"""
     from openpyxl import Workbook
@@ -3012,7 +3059,7 @@ def build_report_xlsx(a: Dict[str, Any]) -> bytes:
             c.fill, c.font = head_fill, head_font
             c.alignment = Alignment(horizontal="center", vertical="center")
         for r in rows:
-            ws.append(r)
+            ws.append([xl_safe(v) for v in r])
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
@@ -3741,10 +3788,11 @@ def serve_admin_users():
     return f.read_text(encoding="utf-8")
 
 @app.get("/api/synonyms")
-async def get_synonyms():
+async def get_public_synonyms():
     """Synonyms.jsonã‚’è¿”ã™"""
     try:
-        with open('synonyms.json', 'r', encoding='utf-8') as f:
+        # 永続ディスク上の辞書を読む（以前は作業フォルダの synonyms.json を見ており、本番では見つからなかった）
+        with open(SYNONYMS_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         print(f"Synonymsèª­ã¿è¾¼ã¿ã‚¨ãƒ©ãƒ¼: {e}")
