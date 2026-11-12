@@ -1272,6 +1272,7 @@
 
       vidState.items = vidRes.items || [];
       vidState.total = vidRes.total_visible || vidState.items.length;
+      vidState.preparing = !!vidRes.preparing;   // サーバー起動直後で動画検索の準備中
 
       renderResults();
       // 検索実行ログ用: 通信エラー時は記録しない。FAQ検索OFFの時は件数null
@@ -1355,7 +1356,9 @@
     var pageItems = vidState.items.slice(start, end);
 
     if (pageItems.length === 0) {
-      grid.innerHTML = '<div class="no-result" style="grid-column:1/-1;">該当する動画が見つかりませんでした。</div>';
+      grid.innerHTML = vidState.preparing
+        ? '<div class="no-result" style="grid-column:1/-1;">⏳ ' + (currentLanguage === 'en' ? 'Video search is being prepared. Please try again in a few minutes.' : 'ただいま動画検索の準備中です。数分後にもう一度お試しください。') + '</div>'
+        : '<div class="no-result" style="grid-column:1/-1;">該当する動画が見つかりませんでした。</div>';
       pagination.style.display = 'none';
       return;
     }
