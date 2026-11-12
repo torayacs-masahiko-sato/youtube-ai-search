@@ -1238,8 +1238,10 @@
 
     showLoading();
 
-    var expanded = expandQuery(q);
-    console.log('📝 Expanded query:', expanded);
+    // 同義語の展開はサーバー側で行う（意味検索にだけ使い、完全一致・キーワード一致は元の検索語で判定するため）。
+    // ここで展開した文字列を送ると、完全一致の優先表示が効かなくなるので、元の検索語をそのまま送る。
+    var expanded = q;
+    console.log('📝 Expanded query (client preview):', expandQuery(q));
     console.log('🌐 Language:', currentLanguage);
     console.log('📚 FAQ enabled:', faqSearchEnabled);
 
