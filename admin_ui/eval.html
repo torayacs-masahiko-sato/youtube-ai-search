@@ -197,6 +197,9 @@
         + '<dt>データ</dt><dd>FAQ '+d.faqs+'件 ／ 動画 '+d.videos+'本（'+d.video_chunks+'区切り）</dd>'
         + '<dt>メモリ使用量</dt><dd>'+(d.memory_mb==null?'-':d.memory_mb+' MB')+' <span class="help">（Standardプランの上限 2048 MB）</span></dd>'
         + (d.model_load_seconds!=null?'<dt>モデル読込時間</dt><dd>'+d.model_load_seconds+' 秒</dd>':'')
+        + (d.video_rebuilding ? '<dt>動画の検索用データ</dt><dd>再計算中'
+            + (d.video_progress && d.video_progress.total ? '（'+d.video_progress.done+' / '+d.video_progress.total+' 区切り、残り約'+Math.ceil((d.video_progress.eta_seconds||0)/60)+'分）' : '')
+            + ' <span class="help">計算中も検索は直前のデータで動きます</span></dd>' : '')
         + '</dl>'
         + '<div class="row mt" style="margin-top:14px">'
         + (s.ja_tokenizer_available ? '<button class="btn sm" onclick="setJa('+(!s.ja_tokenizer_enabled)+')">日本語解析を本番で'+(s.ja_tokenizer_enabled?'OFF':'ON')+'にする</button>' : '')
