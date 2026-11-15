@@ -111,6 +111,9 @@ VIDEO_CHUNK_META_CACHE_PATH = CACHE_DIR / f"video_chunks_meta{_MODEL_SUFFIX}.jso
 # 動画を1本更新しても、変わった区切りだけを計算すれば済むようにするため。
 VIDEO_CHUNK_VEC_CACHE_PATH = CACHE_DIR / f"video_chunk_vectors{_MODEL_SUFFIX}.npy"
 VIDEO_CHUNK_KEY_CACHE_PATH = CACHE_DIR / f"video_chunk_keys{_MODEL_SUFFIX}.json"
+# FAQごとの計算結果キャッシュ（内容が変わったFAQだけ計算し直すため）
+FAQ_VEC_CACHE_PATH = CACHE_DIR / f"faq_vectors{_MODEL_SUFFIX}.npy"
+FAQ_KEY_CACHE_PATH = CACHE_DIR / f"faq_keys{_MODEL_SUFFIX}.json"
 # 埋め込み計算の設定
 #  ENCODE_BATCH_SIZE: 一度に計算する件数。大きいほど速いがメモリを使う。e5系は長い文章(最大512トークン)を
 #                     扱うため、64件まとめるとメモリが1GB以上一時的に増えることがあり、小さめにする。
@@ -164,17 +167,25 @@ class AppState:
         # 再計算中に別スレッドで差し替わっても、検索が「新旧が混ざった状態」を見ないようにするため
         self.video_snapshot = ([], [], None)
         self.video_progress: Dict[str, Any] = {}
+        # FAQも動画と同じく「作り直し中は直前のデータで検索を続ける」ための状態
+        self.faq_dirty = False
+        self.faq_loading = False
+        self.faq_snapshot = ([], None)   # (FAQ一覧, 索引) を1つにまとめたもの
         
     # ------------------------------------------------------------
     # 読み込み処理（モデル・動画・FAQ）
     # なぜ別スレッドか: モデルの読み込みや埋め込み計算は数十秒〜数分かかる（1CPU・モデル切替直後）。
     # 本体の処理（イベントループ）で実行すると、その間ヘルスチェックや他のお客様の検索まで止まるため、
     # 別スレッドで実行し、待っている検索は完了を待つだけにする。同時に2回読み込まないようロックする。
+    # ロックはモデル・動画・FAQで別々にする（以前は共通だったため、動画の長い再計算中に
+    # FAQの更新が順番待ちになり、FAQ検索が数十分止まることがあった）。
     # ------------------------------------------------------------
-    _load_lock = threading.RLock()
+    _model_lock = threading.Lock()
+    _video_lock = threading.RLock()
+    _faq_lock = threading.RLock()
 
     def _load_model_sync(self):
-        with self._load_lock:
+        with self._model_lock:
             if not self.model_loaded:
                 t0 = time.time()
                 print(f"🔄 Loading model: {EMBEDDING_MODEL} (query prefix={QUERY_PREFIX!r}, passage prefix={PASSAGE_PREFIX!r})")
@@ -188,7 +199,7 @@ class AppState:
             await asyncio.to_thread(self._load_model_sync)
 
     def _load_video_sync(self):
-        with self._load_lock:
+        with self._video_lock:
             self._load_video_locked()
 
     async def ensure_video_loaded(self):
@@ -196,7 +207,7 @@ class AppState:
             await asyncio.to_thread(self._load_video_sync)
 
     def _load_faq_sync(self):
-        with self._load_lock:
+        with self._faq_lock:
             self._load_faq_locked()
 
     async def ensure_faq_loaded(self):
@@ -365,108 +376,191 @@ class AppState:
         return np.stack([cache[k] for k in keys]).astype("float32")
 
     def _load_faq_locked(self):
-        # FAQデータの遅延ロード ※ロック取得済みで呼ぶこと
-        if not self.faq_loaded:
-            self._load_model_sync()
-            print("ðŸ”„ Loading FAQ data...")
-            
-            if FAQ_PATH.exists():
-                print(f"✅ FAQ file found: {FAQ_PATH}")
-                try:
-                    # UTF-8で読み込み試行
-                    with open(FAQ_PATH, "r", encoding="utf-8") as f:
-                        self.faq_data = json.load(f)
-                    print(f"✅ FAQ file loaded (UTF-8), keys: {list(self.faq_data.keys())}")
-                except UnicodeDecodeError:
-                    # UTF-8で失敗した場合、Shift-JIS (cp932) を試行
-                    print(f"⚠️ UTF-8 decode failed, trying cp932...")
-                    try:
-                        with open(FAQ_PATH, "r", encoding="cp932") as f:
-                            self.faq_data = json.load(f)
-                        print(f"✅ FAQ file loaded (cp932), keys: {list(self.faq_data.keys())}")
-                    except Exception as e:
-                        print(f"❌ Failed to load FAQ file with cp932: {e}")
-                        self.faq_data = {}
-                except Exception as e:
-                    print(f"❌ Failed to load FAQ file: {e}")
-                    self.faq_data = {}
-            else:
-                print(f"❌ FAQ file not found: {FAQ_PATH}")
-                print(f"   BASE_DIR: {BASE_DIR}")
-                self.faq_data = {}
-            
-            # FAQ ã‚¢ã‚¤ãƒ†ãƒ ã‚’ãƒ•ãƒ©ãƒƒãƒˆåŒ–
-            # å¯¾å¿œãƒ•ã‚©ãƒ¼ãƒžãƒƒãƒˆ:
-            #   A) {"faqs": [...], "meta": {...}}  â† faqsé…åˆ—ç›´æŽ¥
-            #   B) {"ã‚«ãƒ†ã‚´ãƒªå": [...], ...}       â† ã‚«ãƒ†ã‚´ãƒªè¾žæ›¸
-            self.faq_items_flat = []
+        """FAQの読み込みと検索用データの作成 ※ロック取得済みで呼ぶこと
+        ・FAQごとの計算結果をキャッシュし、内容が変わったFAQだけを計算する
+        ・作り直しの間も、検索は直前のデータ（faq_snapshot）で続ける。完成したら一度に差し替える
+        ・作り直し中に新しい変更が入った場合（faq_dirty）は、終わった後にもう一度作り直す
+        """
+        if self.faq_loaded and not self.faq_dirty:
+            return
+        self._load_model_sync()
+        self.faq_loading = True
+        try:
+            while True:
+                self.faq_dirty = False
+                self._build_faq_index()
+                if not self.faq_dirty:
+                    break
+                print("🔁 FAQ data changed during rebuild; rebuilding again with the latest data")
+        finally:
+            self.faq_loading = False
 
-            # ãƒ•ã‚©ãƒ¼ãƒžãƒƒãƒˆA: "faqs" ã‚­ãƒ¼ã«é…åˆ—ãŒå…¥ã£ã¦ã„ã‚‹å ´åˆ
-            if "faqs" in self.faq_data and isinstance(self.faq_data["faqs"], list):
-                print(f"📋 Processing {len(self.faq_data['faqs'])} FAQ items from 'faqs' array")
-                for item in self.faq_data["faqs"]:
-                    if isinstance(item, dict):
-                        # フィールド正規化: faq_id → id, answer_steps → steps
-                        normalized_item = item.copy()
-                        if "faq_id" in normalized_item and "id" not in normalized_item:
-                            normalized_item["id"] = normalized_item.pop("faq_id")
-                        if "answer_steps" in normalized_item and "steps" not in normalized_item:
-                            normalized_item["steps"] = normalized_item.pop("answer_steps")
-                        
-                        # 不要なフィールドを削除
-                        for field in ["manual_ref", "confidence", "support_based"]:
-                            if field in normalized_item:
-                                del normalized_item[field]
-                        
-                        # utterances がない場合は question で代用
-                        if "utterances" not in normalized_item and "question" in normalized_item:
-                            normalized_item["utterances"] = [normalized_item["question"]]
-                        self.faq_items_flat.append(normalized_item)
-                print(f"✅ Normalized {len(self.faq_items_flat)} FAQ items")
-            else:
-                # ãƒ•ã‚©ãƒ¼ãƒžãƒƒãƒˆB: ã‚«ãƒ†ã‚´ãƒªè¾žæ›¸å½¢å¼
-                for category_key, items in self.faq_data.items():
-                    if isinstance(items, list):
-                        for item in items:
-                            if isinstance(item, dict):
-                                if "category" not in item:
-                                    item["category"] = category_key
-                                self.faq_items_flat.append(item)
-            
-            # コーパス構築（question / utterances / steps / answer / keywords / note を統合）
-            # FAQ items合計のログ出力
-            print(f"📊 Total FAQ items loaded: {len(self.faq_items_flat)}")
-            
-            self.faq_corpus = []
-            for item in self.faq_items_flat:
-                text_parts = [
-                    item.get("question", ""),
-                    " ".join(item.get("utterances", [])),
-                    " ".join(item.get("steps", [])),
-                    item.get("answer", ""),          # steps正規化されなかった場合の回答本文も対象に
-                    " ".join(item.get("keywords", [])),
-                    " ".join(item.get("tags", [])),  # tags も検索対象に
-                    item.get("note", ""),            # ヒント・補足情報も検索対象に
-                    item.get("intent", ""),
-                    item.get("category", ""),
-                ]
-                combined = " ".join(filter(None, text_parts))
-                self.faq_corpus.append(normalize_text(combined))
-            
-            # FAISS インデックス構築
-            if self.faq_corpus:
-                self.faq_embeddings = encode_passages(self.faq_corpus)
-                faiss.normalize_L2(self.faq_embeddings)
-                self.faq_index = build_optimized_index(self.faq_embeddings)
-            
-            self.faq_loaded = True
-            print(f"âœ… FAQ data loaded: {len(self.faq_items_flat)} items")
+    def _build_faq_index(self):
+        t0 = time.time()
+        faq_data: Dict[str, Any] = {}
+        items: List[Dict[str, Any]] = []
+        corpus: List[str] = []
+        print("ðŸ”„ Loading FAQ data...")
+        
+        if FAQ_PATH.exists():
+            print(f"✅ FAQ file found: {FAQ_PATH}")
+            try:
+                # UTF-8で読み込み試行
+                with open(FAQ_PATH, "r", encoding="utf-8") as f:
+                    faq_data = json.load(f)
+                print(f"✅ FAQ file loaded (UTF-8), keys: {list(faq_data.keys())}")
+            except UnicodeDecodeError:
+                # UTF-8で失敗した場合、Shift-JIS (cp932) を試行
+                print(f"⚠️ UTF-8 decode failed, trying cp932...")
+                try:
+                    with open(FAQ_PATH, "r", encoding="cp932") as f:
+                        faq_data = json.load(f)
+                    print(f"✅ FAQ file loaded (cp932), keys: {list(faq_data.keys())}")
+                except Exception as e:
+                    print(f"❌ Failed to load FAQ file with cp932: {e}")
+                    faq_data = {}
+            except Exception as e:
+                print(f"❌ Failed to load FAQ file: {e}")
+                faq_data = {}
+        else:
+            print(f"❌ FAQ file not found: {FAQ_PATH}")
+            print(f"   BASE_DIR: {BASE_DIR}")
+            faq_data = {}
+        
+        # FAQを1件ずつの一覧にする（ファイル形式の違いを吸収）
+        items = flatten_faq_data(faq_data)
+
+        # コーパス構築（question / utterances / steps / answer / keywords / note を統合）
+        # FAQ items合計のログ出力
+        print(f"📊 Total FAQ items loaded: {len(items)}")
+        
+        corpus = []
+        for item in items:
+            text_parts = [
+                item.get("question", ""),
+                " ".join(item.get("utterances", [])),
+                " ".join(item.get("steps", [])),
+                item.get("answer", ""),          # steps正規化されなかった場合の回答本文も対象に
+                " ".join(item.get("keywords", [])),
+                " ".join(item.get("tags", [])),  # tags も検索対象に
+                item.get("note", ""),            # ヒント・補足情報も検索対象に
+                item.get("intent", ""),
+                item.get("category", ""),
+            ]
+            combined = " ".join(filter(None, text_parts))
+            corpus.append(normalize_text(combined))
+        
+        embeddings = self._faq_encode_with_cache(corpus) if corpus else None
+        index = build_optimized_index(embeddings) if embeddings is not None and len(embeddings) > 0 else None
+
+        # まとめて差し替え
+        self.faq_snapshot = (items, index)
+        self.faq_corpus = corpus
+        self.faq_embeddings = embeddings
+        self.faq_index = index
+        if not self.faq_loaded:
+            # 起動時の初回だけ、管理画面用のデータもここで設定する。
+            # 2回目以降は、管理画面の保存処理が即座に更新している（_save_faq_file）ので上書きしない
+            # （作り直しの途中で行われた保存を、古い内容で戻してしまわないため）
+            self.faq_data = faq_data
+            self.faq_items_flat = items
+        self.faq_loaded = True
+        print(f"✅ FAQ data loaded: {len(items)} items ({time.time() - t0:.1f}s)")
+
+    def _faq_encode_with_cache(self, corpus: List[str]) -> np.ndarray:
+        """FAQの埋め込み計算。前回と文章が同じFAQは保存済みの結果を使う"""
+        cache: Dict[str, np.ndarray] = {}
+        try:
+            if FAQ_VEC_CACHE_PATH.exists() and FAQ_KEY_CACHE_PATH.exists():
+                with open(FAQ_KEY_CACHE_PATH, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                vecs = np.load(FAQ_VEC_CACHE_PATH)
+                if meta.get("model") == EMBEDDING_MODEL and len(meta.get("keys", [])) == len(vecs):
+                    cache = {k: vecs[n] for n, k in enumerate(meta["keys"])}
+        except Exception as e:
+            print(f"⚠️ Failed to read FAQ cache (will recompute): {e}")
+            cache = {}
+        keys = [self._chunk_key(t) for t in corpus]
+        missing = {}
+        for k, t in zip(keys, corpus):
+            if k not in cache and k not in missing:
+                missing[k] = t
+        print(f"🧮 FAQ items: {len(corpus)} total, {sum(1 for k in keys if k in cache)} from cache, {len(missing)} to compute")
+        if missing:
+            todo = list(missing.items())
+            vecs = encode_passages([t for _, t in todo])
+            faiss.normalize_L2(vecs)
+            for (k, _), vec in zip(todo, vecs):
+                cache[k] = vec
+            try:
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                keep = list(dict.fromkeys(keys))
+                tmp_v = FAQ_VEC_CACHE_PATH.with_suffix(".tmp.npy")
+                tmp_k = FAQ_KEY_CACHE_PATH.with_suffix(".tmp.json")
+                np.save(tmp_v, np.stack([cache[k] for k in keep]).astype("float32"))
+                with open(tmp_k, "w", encoding="utf-8") as f:
+                    json.dump({"model": EMBEDDING_MODEL, "passage_prefix": PASSAGE_PREFIX, "keys": keep}, f)
+                os.replace(tmp_v, FAQ_VEC_CACHE_PATH)
+                os.replace(tmp_k, FAQ_KEY_CACHE_PATH)
+            except Exception as e:
+                print(f"⚠️ Failed to save FAQ cache: {e}")
+        return np.stack([cache[k] for k in keys]).astype("float32")
 
 state = AppState()
 
 # ============================================
 # ãƒ¦ãƒ¼ãƒ†ã‚£ãƒªãƒ†ã‚£é–¢æ•°
 # ============================================
+
+def flatten_faq_data(faq_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """faq.json の中身を、FAQ1件ずつの一覧（項目名をそろえたもの）にする。
+    対応形式:
+      A) {"faqs": [...], "meta": {...}}   ← faqs配列
+      B) {"カテゴリ名": [...], ...}        ← カテゴリごとの辞書
+    検索用データの作成と、管理画面の保存直後の一覧更新の両方で使う。"""
+    items: List[Dict[str, Any]] = []
+    if not isinstance(faq_data, dict):
+        return items
+    if "faqs" in faq_data and isinstance(faq_data["faqs"], list):
+        for item in faq_data["faqs"]:
+            if isinstance(item, dict):
+                # フィールド正規化: faq_id → id, answer_steps → steps
+                normalized_item = item.copy()
+                if "faq_id" in normalized_item and "id" not in normalized_item:
+                    normalized_item["id"] = normalized_item.pop("faq_id")
+                if "answer_steps" in normalized_item and "steps" not in normalized_item:
+                    normalized_item["steps"] = normalized_item.pop("answer_steps")
+                # 不要なフィールドを削除
+                for field in ["manual_ref", "confidence", "support_based"]:
+                    if field in normalized_item:
+                        del normalized_item[field]
+                # utterances がない場合は question で代用
+                if "utterances" not in normalized_item and "question" in normalized_item:
+                    normalized_item["utterances"] = [normalized_item["question"]]
+                items.append(normalized_item)
+    else:
+        for category_key, cat_items in faq_data.items():
+            if isinstance(cat_items, list):
+                for item in cat_items:
+                    if isinstance(item, dict):
+                        if "category" not in item:
+                            item["category"] = category_key
+                        items.append(item)
+    return items
+
+
+def save_faq_file(data: Dict[str, Any]) -> None:
+    """faq.json を保存し、管理画面用のFAQ一覧をすぐに更新する。
+    ・一時ファイルに書いてから置き換えるので、検索用データの作り直し（別スレッド）が
+      書きかけのファイルを読むことがない
+    ・検索用データの作り直しは、この後 reload_faq_data() で行う（その間も検索は直前のデータで動く）"""
+    tmp = FAQ_PATH.with_suffix(FAQ_PATH.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, FAQ_PATH)
+    state.faq_data = data
+    state.faq_items_flat = flatten_faq_data(data)
+
 
 def encode_passages(texts: List[str]) -> np.ndarray:
     """文書側（動画の区切り・FAQ）の埋め込み計算。小分けにしてロックを取り、検索を長く待たせない。
@@ -656,6 +750,21 @@ def title_match_score(query: str, title: str) -> float:
         bigram_score = 0.0
 
     return max(word_score, bigram_score)
+def semantic_for_ranking(semantic_score: float, config: Dict[str, Any]) -> float:
+    """並び順の計算に使う「意味の近さ」。
+    semantic_normalize が有効なときは、しきい値〜1.0 の範囲を 0〜1 に引き伸ばす。
+    なぜ必要か: e5系のモデルは点数が 0.8〜0.9 のような狭い範囲に固まるため、そのまま
+    「意味×0.6＋キーワード×0.4」で合算すると意味の差がほとんど順位に効かず、実質キーワードだけで
+    並んでしまう。引き伸ばすことで、意味の近さの差がきちんと順位に反映される。
+    しきい値（表示する/しないの判定）は従来どおり元の点数で行う。"""
+    if not config.get("semantic_normalize", False):
+        return semantic_score
+    th = float(config.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD))
+    if th >= 0.999:
+        return semantic_score
+    return max(0.0, min(1.0, (semantic_score - th) / (1.0 - th)))
+
+
 def keyword_match_score(query: str, text: str, use_ja: bool = False) -> float:
     """キーワード一致度（0.0〜1.0）。
     use_ja=False: 従来の title_match_score と完全に同じ。
@@ -1157,7 +1266,7 @@ def video_search_core(query: str, language: Optional[str], config: Dict[str, Any
         if language != "all" and video_lang != language:
             continue
         title_bonus = keyword_match_score(query, video.get("title", ""), use_ja)
-        hybrid_score = semantic_score * semantic_weight + title_bonus * title_weight
+        hybrid_score = semantic_for_ranking(semantic_score, config) * semantic_weight + title_bonus * title_weight
         video["score"] = hybrid_score
         video["semantic_score"] = semantic_score
         video["title_score"] = title_bonus
@@ -1359,8 +1468,11 @@ def faq_search_core(query: str, language: Optional[str], config: Dict[str, Any],
         query_embedding = state.model.encode([QUERY_PREFIX + expanded_query], convert_to_numpy=True)
     faiss.normalize_L2(query_embedding)
 
-    k = min(offset_limit + 100, len(state.faq_items_flat))
-    distances, indices = state.faq_index.search(query_embedding, k)
+    faq_items, faq_index = state.faq_snapshot   # 作り直し中の差し替えと混ざらないよう、1回だけ読む
+    if faq_index is None or not faq_items:
+        return []
+    k = min(offset_limit + 100, len(faq_items))
+    distances, indices = faq_index.search(query_embedding, k)
 
     semantic_weight = config.get("semantic_weight", SEMANTIC_WEIGHT)
     title_weight = config.get("title_weight", TITLE_WEIGHT)
@@ -1368,16 +1480,16 @@ def faq_search_core(query: str, language: Optional[str], config: Dict[str, Any],
     results = []
     all_scores = []
     for idx, score in zip(indices[0], distances[0]):
-        if 0 <= idx < len(state.faq_items_flat):
+        if 0 <= idx < len(faq_items):
             all_scores.append(float(score))
-            item = state.faq_items_flat[idx].copy()
+            item = faq_items[idx].copy()
             item_lang = item.get("language", "ja")
             if language != "all" and item_lang != language:
                 continue
             # 質問・回答・手順・キーワード等の全文一致度で、意味検索が拾いきれない専門用語を補完
             semantic_score = float(score)
             keyword_bonus = faq_keyword_match_score(query, item, use_ja)
-            item["score"] = semantic_score * semantic_weight + keyword_bonus * title_weight
+            item["score"] = semantic_for_ranking(semantic_score, config) * semantic_weight + keyword_bonus * title_weight
             item["semantic_score"] = semantic_score
             item["title_score"] = keyword_bonus
             # 意味検索のスコアが閾値以上、またはキーワード一致度が高ければ結果に含める
@@ -1518,16 +1630,20 @@ async def get_faq():
 @app.put("/admin/api/faq", dependencies=[Depends(verify_admin)])
 async def update_faq(data: dict, background_tasks: BackgroundTasks):
     """FAQå…¨ä½“æ›´æ–°"""
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    save_faq_file(data)
     
     background_tasks.add_task(reload_faq_data)
     return {"status": "ok"}
 
 async def reload_faq_data():
     """FAQãƒ‡ãƒ¼ã‚¿ã®ãƒªãƒ­ãƒ¼ãƒ‰"""
-    state.faq_loaded = False
-    await state.ensure_faq_loaded()
+    # 「作り直してほしい」印だけ付けて、別スレッドで作り直す。その間も検索は直前のデータで動く
+    # （以前は完了まで FAQ 検索を止めていたため、更新直後の検索が待たされていた）
+    state.faq_dirty = True
+    try:
+        await asyncio.to_thread(state._load_faq_sync)
+    except Exception as e:
+        print(f"❌ FAQ reload failed (search keeps using previous data): {e}")
 
 # ============================================
 # ç®¡ç†API - FAQå€‹åˆ¥ç·¨é›†
@@ -1639,8 +1755,7 @@ async def _create_faq_item_internal(item: dict, changed_by: str = "admin") -> st
             state.faq_data[category] = []
         state.faq_data[category].append(item)
 
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+    save_faq_file(state.faq_data)
 
     record_faq_history(faq_id, "create", changed_by, None, item)
     return faq_id
@@ -1657,8 +1772,7 @@ async def _update_faq_item_internal(item_id: str, item: dict, changed_by: str = 
     before = dict(container[i]) if isinstance(container[i], dict) else None
     container[i] = item
 
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+    save_faq_file(state.faq_data)
 
     record_faq_history(item_id, "update", changed_by, before, item)
 
@@ -1674,8 +1788,7 @@ async def _delete_faq_item_internal(item_id: str, changed_by: str = "admin"):
     before = dict(container[i]) if isinstance(container[i], dict) else None
     del container[i]
 
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+    save_faq_file(state.faq_data)
 
     record_faq_history(item_id, "delete", changed_by, before, None)
 
@@ -1720,8 +1833,7 @@ async def delete_all_faqs(background_tasks: BackgroundTasks):
                 state.faq_data[key] = []
         print(f"✅ Deleted {count} FAQs (category dict format)")
     
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+    save_faq_file(state.faq_data)
     
     background_tasks.add_task(reload_faq_data)
     return {"status": "deleted", "count": count}
@@ -1805,8 +1917,7 @@ async def import_faqs(data: dict, background_tasks: BackgroundTasks):
                 state.faq_data[category].append(imported_item)
                 added_count += 1
     
-    with open(FAQ_PATH, "w", encoding="utf-8") as f:
-        json.dump(state.faq_data, f, ensure_ascii=False, indent=2)
+    save_faq_file(state.faq_data)
     
     background_tasks.add_task(reload_faq_data)
     return {
@@ -3441,6 +3552,7 @@ def _eval_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         "title_weight": config.get("title_weight", TITLE_WEIGHT),
         "ja_tokenizer_enabled": bool(config.get("ja_tokenizer_enabled", False)),
         "ja_tokenizer_available": ja_text.available(),
+        "semantic_normalize": bool(config.get("semantic_normalize", False)),
     }
 
 
@@ -3457,6 +3569,7 @@ async def eval_status():
         "memory_mb": _rss_mb(),
         "running": _eval_running,
         "video_rebuilding": state.video_loading, "video_progress": state.video_progress,
+        "faq_rebuilding": state.faq_loading,
     }
 
 
@@ -3525,7 +3638,7 @@ async def eval_run(body: dict):
         await state.ensure_faq_loaded()
         await state.ensure_video_loaded()
         config = dict(await get_config())
-        allowed = {"ja_tokenizer_enabled": bool, "similarity_threshold": float, "semantic_weight": float, "title_weight": float}
+        allowed = {"ja_tokenizer_enabled": bool, "semantic_normalize": bool, "similarity_threshold": float, "semantic_weight": float, "title_weight": float}
         overrides = {}
         for k, conv in allowed.items():
             if k in (body.get("overrides") or {}):
