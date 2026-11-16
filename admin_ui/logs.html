@@ -96,6 +96,28 @@
     .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;}
     .pill.r{background:#fee2e2;color:#b91c1c;}.pill.y{background:#fef3c7;color:#92400e;}
     .scroll{max-height:380px;overflow:auto;}
+
+    /* 利用地域 */
+    .geo-sum{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin-bottom:12px;color:var(--muted);}
+    .geo-sum b{color:var(--text);font-size:15px;}
+    .geo-tabs{display:flex;gap:6px;margin-bottom:14px;}
+    .geo-tabs button{padding:6px 16px;border-radius:999px;border:1.5px solid var(--border);background:#fff;font:inherit;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;}
+    .geo-tabs button[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:#fff;}
+    .geo-tabs button:focus-visible,.geo-pick:focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+    .geo-pick{cursor:pointer;border-radius:6px;}
+    .geo-pick[aria-pressed="true"] .bl{font-weight:700;color:var(--brand);}
+    .heat{border-collapse:separate;border-spacing:2px;width:100%;table-layout:fixed;}
+    .heat th,.heat td{padding:0;border:none;background:none;font-size:10px;text-align:center;}
+    .heat th{color:var(--muted);font-weight:600;text-transform:none;height:18px;}
+    .heat th.rn,.heat td.rn{width:96px;text-align:left;font-size:12px;padding-right:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .heat td.c{height:24px;border-radius:3px;background:#f1f5f9;color:transparent;}
+    .heat td.c.on{color:inherit;}
+    .heat td.tot{width:44px;font-size:12px;font-weight:700;text-align:right;}
+    .heat tr:hover td{background:none;}
+    .heat-wrap{overflow-x:auto;}
+    .heat-wrap table.heat{display:table;min-width:640px;}  /* 共通CSSのスマホ用「表を横スクロール」設定より優先し、横スクロールは外枠で行う */
+    .geo-foot{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.7;}
+    .geo-foot a{color:var(--muted);}
     .print-only{display:none;}
     @media print{
       header,footer,.toolbar,.an-tool,#rankSec,#monthSec,.no-print{display:none!important;}
@@ -479,6 +501,9 @@
         return '<td>'+esc(r.query)+'</td><td><span class="pill y">'+r.no_click+'回</span></td><td>'+(r.avg_faq_hits==null?'-':r.avg_faq_hits)+'</td><td>'+r.avg_video_hits+'</td>'; },'該当なし')+'</div>'
       +'</div>';
 
+    // 利用地域
+    html+='<div id="geoSec" style="margin-bottom:20px"></div>';
+
     // 期間内クリックランキング
     function rk(items, type){
       if(!items.length) return '<div class="empty" style="padding:20px">データなし</div>';
@@ -490,6 +515,76 @@
     html+='<div class="grid2"><div class="card"><div class="ct">期間内 FAQクリック TOP10</div>'+rk(d.faq_ranking,'faq')+'</div>'
       +'<div class="card"><div class="ct">期間内 動画クリック TOP10</div>'+rk(d.video_ranking,'video')+'</div></div>';
     document.getElementById('anBody').innerHTML=html;
+    geoData=d.geo||null; geoSel=null; geoRender();
+  }
+
+  /* ---- 利用地域（国内=都道府県 / 海外=国）。時間帯は日本時間 ---- */
+  var geoData=null, geoMode='domestic', geoSel=null;
+  function geoSetMode(m){ geoMode=m; geoSel=null; geoRender(); }
+  function geoPick(i){ geoSel=(geoSel===i?null:i); geoRender(); }
+  function geoRender(){
+    var el=document.getElementById('geoSec'); if(!el) return;
+    var g=geoData;
+    if(!g){ el.innerHTML=''; return; }
+    var st=g.status||{}, h='<div class="card"><div class="ct">利用地域 <span style="font-size:11px;color:var(--muted);font-weight:400">（どこから検索されたか。時間帯は日本時間）</span></div>';
+    if(st.state && st.state!=='利用可能'){
+      h+='<div class="an-note">ℹ️ 位置データの状態: <b>'+esc(st.state)+'</b>'+(st.error?'（'+esc(st.error)+'）':'')+'。準備ができるまでの検索は「不明」になります。</div>';
+    }
+    else if(st.error){
+      h+='<div class="an-note">ℹ️ 位置データの更新に失敗しました（'+esc(st.error)+'）。前回のデータで判定を続けています。翌日に自動で再試行します。</div>';
+    }
+    if(g.no_record && !g.recorded){
+      h+='<div class="an-note">📭 この期間の検索には地域が記録されていません。地域の記録は今回の更新以降の検索が対象です。</div></div>';
+      el.innerHTML=h; return;
+    }
+    if(g.no_record){
+      h+='<div class="an-note">ℹ️ この期間のうち '+g.no_record+'件 は地域を記録する前の検索のため、集計に含まれていません。</div>';
+    }
+    h+='<div class="geo-sum"><span>国内 <b>'+g.domestic.total+'</b>件</span><span>海外 <b>'+g.overseas.total+'</b>件</span><span>不明 <b>'+g.unknown+'</b>件</span></div>';
+    h+='<div class="geo-tabs" role="group" aria-label="集計の切り替え">'
+      +'<button type="button" aria-pressed="'+(geoMode==='domestic')+'" onclick="geoSetMode(\'domestic\')">国内（都道府県別）</button>'
+      +'<button type="button" aria-pressed="'+(geoMode==='overseas')+'" onclick="geoSetMode(\'overseas\')">海外（国別）</button></div>';
+    var part=g[geoMode], rows=part.rows||[];
+    if(!rows.length){
+      h+='<div class="empty" style="padding:24px">'+(geoMode==='domestic'?'国内からの検索はありません':'海外からの検索はありません')+'</div>';
+    } else {
+      var max=rows[0].count;
+      var list=rows.map(function(r,i){
+        return '<div class="bw geo-pick" role="button" tabindex="0" aria-pressed="'+(geoSel===i)+'" onclick="geoPick('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();geoPick('+i+');}">'
+          +'<div class="br">'+(i+1)+'</div><div class="bl" title="'+esc(r.name)+'">'+esc(r.name)+'</div>'
+          +'<div class="bt"><div class="bf brand" style="width:'+(r.count/max*100).toFixed(1)+'%"></div></div>'
+          +'<div class="bc">'+r.count+'件</div></div>';
+      }).join('');
+      var sel=geoSel!=null && rows[geoSel] ? rows[geoSel] : null;
+      var hrs=sel?sel.hours:part.hours;
+      var label=(sel?sel.name:(geoMode==='domestic'?'国内 全体':'海外 全体'))+' の時間帯別 検索回数';
+      h+='<div class="grid2" style="margin-bottom:16px">'
+        +'<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(geoMode==='domestic'?'都道府県':'国')+'を選ぶと、右のグラフがその地域の時間帯に切り替わります</div><div class="scroll">'+list+'</div></div>'
+        +colChart(hrs, hrs.map(function(_,i){return i+'時';}), esc(label))
+        +'</div>';
+      // 地域×時間帯の表（上位15件）
+      var top=rows.slice(0,15), cmax=1;
+      top.forEach(function(r){ r.hours.forEach(function(v){ if(v>cmax) cmax=v; }); });
+      var t='<div class="heat-wrap"><table class="heat"><caption style="text-align:left;font-size:13px;font-weight:700;padding-bottom:6px">'
+        +(geoMode==='domestic'?'都道府県':'国')+' × 時間帯（上位15件・色が濃いほど多い）</caption><thead><tr><th class="rn" scope="col">地域</th>';
+      for(var i=0;i<24;i++) t+='<th scope="col">'+(i%3===0?i:'')+'</th>';
+      t+='<th class="tot" scope="col">計</th></tr></thead><tbody>';
+      top.forEach(function(r){
+        t+='<tr><th class="rn" scope="row" title="'+esc(r.name)+'" style="font-weight:600;color:var(--text)">'+esc(r.name)+'</th>';
+        r.hours.forEach(function(v,i){
+          if(!v){ t+='<td class="c" title="'+esc(r.name)+' '+i+'時台: 0件"></td>'; return; }
+          var a=0.15+0.85*(v/cmax);
+          t+='<td class="c on" style="background:rgba(0,102,204,'+a.toFixed(2)+');color:'+(a>0.55?'#fff':'#0b3d75')+'" title="'+esc(r.name)+' '+i+'時台: '+v+'件">'+v+'</td>';
+        });
+        t+='<td class="tot">'+r.count+'</td></tr>';
+      });
+      h+=t+'</tbody></table></div>';
+    }
+    h+='<div class="geo-foot">※地域はIPアドレスから推定した目安です。スマホ回線や大手プロバイダーは東京・大阪の設備として判定されやすく、会社のVPN経由はその拠点の地域になります。IPアドレス自体は保存していません。'
+      +(geoMode==='domestic'&&part.pref_unknown?'<br>※「都道府県不明」は日本からの検索で、都道府県まで判定できなかったものです。':'')
+      +(st.db_date?'<br>位置データ: '+esc(st.db_date)+' 版':'')
+      +'<br><a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a></div>';
+    el.innerHTML=h+'</div>';
   }
 
   function anExcel() {
