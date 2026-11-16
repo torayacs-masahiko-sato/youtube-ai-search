@@ -24,6 +24,7 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 import threading
 import asyncio
+import geo_ip   # IPアドレス→国・都道府県（検索分析の「利用地域」用。geo_ip.py参照）
 import ja_text  # 日本語解析（形態素解析）。未インストールでも起動できる作り（ja_text.py参照）
 import io
 import time
@@ -1170,6 +1171,7 @@ async def lifespan(app: FastAPI):
     # モデル切り替え直後は埋め込みの再計算に数分かかるため特に重要）。
     # 別スレッドで動くので、起動完了・ヘルスチェックは待たせない。WARMUP_ON_START=0 で無効化できる。
     reload_synonyms()
+    geo_ip.start(DATA_DIR)   # 位置データの用意（別スレッド。失敗しても検索には影響しない）
     if os.getenv("WARMUP_ON_START", "1") != "0":
         async def _warmup():
             try:
@@ -2972,7 +2974,8 @@ async def get_video_ranking(limit: int = 10):
 # そこで検索が落ち着いた時点（入力が止まった / Enter / 結果クリック前）で1件記録します。
 #
 # 形式: search_events.jsonl（1行1イベントの追記専用。書き込み途中で壊れても他の行に影響しない）
-#   検索:   {"t": ISO日時(UTC), "sid": 検索ID, "q": キーワード, "f": FAQヒット数|null, "v": 動画ヒット数, "lang": "ja"}
+#   検索:   {"t": ISO日時(UTC), "sid": 検索ID, "q": キーワード, "f": FAQヒット数|null, "v": 動画ヒット数, "lang": "ja",
+#            "cc": 国コード, "cn": 国名, "pref": 都道府県}  ※地域の3項目は2026-11-16の更新以降のみ。IPアドレスは保存しない
 #   クリック: {"t": ISO日時(UTC), "sid": 検索ID, "c": "faq"|"video"}
 # 検索IDで検索とクリックを結び付けて集計する。
 # 注意: 個人情報の入力を避ける注意書きは画面側にあるが、キーワードは200文字までに切り詰めて保存する。
@@ -3009,6 +3012,16 @@ def _to_count(v) -> Optional[int]:
     except Exception:
         return None
 
+def _geo_fields(request: Request) -> Dict[str, str]:
+    """お客様のIPから国・都道府県を調べる（IP自体は記録しない）。機能停止中は何も足さない。"""
+    if os.getenv("GEOIP_ENABLED", "1") == "0":
+        return {}
+    try:
+        return geo_ip.lookup(geo_ip.client_ip(request))
+    except Exception as e:
+        print(f"⚠️ Geo lookup failed: {e}")
+        return {"cc": "", "cn": "", "pref": ""}
+
 @app.post("/api/search_event")
 async def log_search_event(body: dict, request: Request):
     """検索実行の記録（お客様画面から、検索が落ち着いた時に1回だけ呼ばれる）"""
@@ -3026,6 +3039,7 @@ async def log_search_event(body: dict, request: Request):
             "f": _to_count(body.get("faq_count")),     # FAQ検索が無効の時はnull
             "v": _to_count(body.get("video_count")),
             "lang": str(body.get("language") or "")[:5],
+            **_geo_fields(request),
         })
     except Exception as e:
         print(f"⚠️ Search event write failed: {e}")
@@ -3077,6 +3091,8 @@ def _read_search_searches() -> List[Dict[str, Any]]:
                         searches[sid] = {
                             "sid": sid, "dt": dt.astimezone(JST), "query": e["q"],
                             "faq": e.get("f"), "video": e.get("v"), "lang": e.get("lang", ""),
+                            # 地域: 記録前のデータは None（「記録なし」）、調べて分からなかった時は ""（「不明」）
+                            "cc": e.get("cc"), "cn": e.get("cn", ""), "pref": e.get("pref", ""),
                         }
                     elif "c" in e:
                         clicks.setdefault(sid, set()).add(e["c"])
@@ -3128,6 +3144,46 @@ def _kpi(searches: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _in_range(dt: datetime, d_from, d_to) -> bool:
     return d_from <= dt.date() <= d_to
+
+def _geo_summary(cur: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """利用地域の集計（国内=都道府県別、海外=国別。それぞれ時間帯別（日本時間）の件数付き）"""
+    dom: Dict[str, List[int]] = {}
+    ovs: Dict[str, List[int]] = {}
+    ovs_name: Dict[str, str] = {}
+    no_record = unknown = dom_unknown = 0
+    dom_hours = [0] * 24
+    ovs_hours = [0] * 24
+    for s in cur:
+        cc = s.get("cc")
+        if cc is None:
+            no_record += 1          # 地域を記録する前の検索
+            continue
+        h = s["dt"].hour
+        if not cc:
+            unknown += 1
+        elif cc == "JP":
+            dom_hours[h] += 1
+            pref = s.get("pref") or ""
+            if not pref:
+                dom_unknown += 1
+                pref = "都道府県不明"
+            dom.setdefault(pref, [0] * 24)[h] += 1
+        else:
+            ovs_hours[h] += 1
+            ovs.setdefault(cc, [0] * 24)[h] += 1
+            ovs_name[cc] = s.get("cn") or cc
+    order = {p: i for i, p in enumerate(geo_ip.PREF_ORDER)}
+    def rows(m, name_of):
+        out = [{"key": k, "name": name_of(k), "count": sum(v), "hours": v} for k, v in m.items()]
+        return sorted(out, key=lambda r: (-r["count"], order.get(r["key"], 999), r["name"]))
+    return {
+        "recorded": len(cur) - no_record, "no_record": no_record, "unknown": unknown,
+        "domestic": {"total": sum(dom_hours), "pref_unknown": dom_unknown, "hours": dom_hours,
+                     "rows": rows(dom, lambda k: k)},
+        "overseas": {"total": sum(ovs_hours), "hours": ovs_hours,
+                     "rows": rows(ovs, lambda k: ovs_name.get(k, k))},
+        "status": geo_ip.status(),
+    }
 
 async def build_search_analytics(date_from: str = "", date_to: str = "") -> Dict[str, Any]:
     d_from, d_to = _resolve_range(date_from, date_to)
@@ -3224,6 +3280,7 @@ async def build_search_analytics(date_from: str = "", date_to: str = "") -> Dict
                      for k, c in vid_counter.most_common(30) if k in vid_by_id][:10]
 
     return {
+        "geo": _geo_summary(cur),
         "from": d_from.isoformat(), "to": d_to.isoformat(), "days": span,
         "prev_range": {"from": p_from.isoformat(), "to": p_to.isoformat()},
         "has_data": bool(all_searches),
