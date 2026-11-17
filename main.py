@@ -22,6 +22,7 @@ import csv
 import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
+from datetime import date as _date   # 別名にして、既存コードやクエリ引数の名前とぶつからないようにする
 import threading
 import asyncio
 import geo_ip   # IPアドレス→国・都道府県（検索分析の「利用地域」用。geo_ip.py参照）
@@ -3145,45 +3146,96 @@ def _kpi(searches: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _in_range(dt: datetime, d_from, d_to) -> bool:
     return d_from <= dt.date() <= d_to
 
-def _geo_summary(cur: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """利用地域の集計（国内=都道府県別、海外=国別。それぞれ時間帯別（日本時間）の件数付き）"""
-    dom: Dict[str, List[int]] = {}
-    ovs: Dict[str, List[int]] = {}
+def _geo_summary(cur: List[Dict[str, Any]], days: Optional[List[_date]] = None) -> Dict[str, Any]:
+    """利用地域の集計（国内=都道府県別、海外=国別。それぞれ時間帯別（日本時間）の件数付き）。
+    days を渡すと、日別の件数（days と同じ並び）も付ける（月毎・週毎の表示用）。"""
+    day_idx = {d: i for i, d in enumerate(days or [])}
+    nd = len(day_idx)
+    new_bucket = lambda: {"hours": [0] * 24, "days": [0] * nd}
+    dom: Dict[str, Dict[str, List[int]]] = {}
+    ovs: Dict[str, Dict[str, List[int]]] = {}
     ovs_name: Dict[str, str] = {}
     no_record = unknown = dom_unknown = 0
-    dom_hours = [0] * 24
-    ovs_hours = [0] * 24
+    dom_all, ovs_all = new_bucket(), new_bucket()
+    def add(b, h, di):
+        b["hours"][h] += 1
+        if di is not None:
+            b["days"][di] += 1
     for s in cur:
         cc = s.get("cc")
         if cc is None:
             no_record += 1          # 地域を記録する前の検索
             continue
         h = s["dt"].hour
+        di = day_idx.get(s["dt"].date())
         if not cc:
             unknown += 1
         elif cc == "JP":
-            dom_hours[h] += 1
             pref = s.get("pref") or ""
             if not pref:
                 dom_unknown += 1
                 pref = "都道府県不明"
-            dom.setdefault(pref, [0] * 24)[h] += 1
+            add(dom_all, h, di); add(dom.setdefault(pref, new_bucket()), h, di)
         else:
-            ovs_hours[h] += 1
-            ovs.setdefault(cc, [0] * 24)[h] += 1
+            add(ovs_all, h, di); add(ovs.setdefault(cc, new_bucket()), h, di)
             ovs_name[cc] = s.get("cn") or cc
     order = {p: i for i, p in enumerate(geo_ip.PREF_ORDER)}
     def rows(m, name_of):
-        out = [{"key": k, "name": name_of(k), "count": sum(v), "hours": v} for k, v in m.items()]
+        out = [{"key": k, "name": name_of(k), "count": sum(v["hours"]), "hours": v["hours"],
+                **({"days": v["days"]} if nd else {})} for k, v in m.items()]
         return sorted(out, key=lambda r: (-r["count"], order.get(r["key"], 999), r["name"]))
+    def part(all_b, m, name_of, **extra):
+        d = {"total": sum(all_b["hours"]), "hours": all_b["hours"], "rows": rows(m, name_of), **extra}
+        if nd:
+            d["days"] = all_b["days"]
+        return d
     return {
         "recorded": len(cur) - no_record, "no_record": no_record, "unknown": unknown,
-        "domestic": {"total": sum(dom_hours), "pref_unknown": dom_unknown, "hours": dom_hours,
-                     "rows": rows(dom, lambda k: k)},
-        "overseas": {"total": sum(ovs_hours), "hours": ovs_hours,
-                     "rows": rows(ovs, lambda k: ovs_name.get(k, k))},
+        "domestic": part(dom_all, dom, lambda k: k, pref_unknown=dom_unknown),
+        "overseas": part(ovs_all, ovs, lambda k: ovs_name.get(k, k)),
         "status": geo_ip.status(),
     }
+
+def _jp_holidays(d_from: _date, d_to: _date) -> Dict[_date, str]:
+    """日本の祝日（振替休日・国民の休日を含む）。jpholiday は法律の規則から計算するライブラリ。
+    使えない場合は空（土日だけ色分けされる）。"""
+    try:
+        import jpholiday
+        return {d: n for d, n in jpholiday.between(d_from, d_to)}
+    except Exception as e:
+        print(f"⚠️ Holiday lookup failed (weekends only): {e}")
+        return {}
+
+def build_geo_period(unit: str, start: str) -> Dict[str, Any]:
+    """利用地域を月毎（1日〜月末）または週毎（月曜〜日曜）に集計する。"""
+    if unit not in ("month", "week"):
+        raise HTTPException(400, "unit は month または week を指定してください")
+    base = _parse_ymd(start, "start") if start else datetime.now(JST).date()
+    if unit == "month":
+        d_from = base.replace(day=1)
+        nxt = (d_from.replace(day=28) + timedelta(days=4)).replace(day=1)
+        d_to = nxt - timedelta(days=1)
+        prv = (d_from - timedelta(days=1)).replace(day=1)
+        label = f"{d_from.year}年{d_from.month}月"
+    else:
+        d_from = base - timedelta(days=base.weekday())
+        d_to = d_from + timedelta(days=6)
+        nxt, prv = d_from + timedelta(days=7), d_from - timedelta(days=7)
+        label = f"{d_from.year}年{d_from.month}月{d_from.day}日（月）〜{d_to.month}月{d_to.day}日（日）"
+    days = [d_from + timedelta(days=i) for i in range((d_to - d_from).days + 1)]
+    all_searches = _read_search_searches()
+    cur = [s for s in all_searches if _in_range(s["dt"], d_from, d_to)]
+    data_start = min((s["dt"].date() for s in all_searches), default=None)
+    hol = _jp_holidays(d_from, d_to)
+    today = datetime.now(JST).date()
+    g = _geo_summary(cur, days)
+    g.update({
+        "unit": unit, "label": label, "from": d_from.isoformat(), "to": d_to.isoformat(),
+        "prev": prv.isoformat() if data_start and data_start < d_from else None,
+        "next": nxt.isoformat() if nxt <= today else None,
+        "day_list": [{"date": d.isoformat(), "dow": d.weekday(), "holiday": hol.get(d, ""), "future": d > today} for d in days],
+    })
+    return g
 
 async def build_search_analytics(date_from: str = "", date_to: str = "") -> Dict[str, Any]:
     d_from, d_to = _resolve_range(date_from, date_to)
@@ -3290,6 +3342,11 @@ async def build_search_analytics(date_from: str = "", date_to: str = "") -> Dict
         "top_queries": top_queries, "zero_hit": zero_hit, "no_click": no_click,
         "faq_ranking": faq_ranking, "video_ranking": video_ranking,
     }
+
+@app.get("/admin/api/analytics/geo", dependencies=[Depends(verify_admin)])
+async def analytics_geo(unit: str = Query("month"), start: str = Query("")):
+    """利用地域（月毎・週毎）。start は期間内の任意の日（省略時は今月／今週）"""
+    return await asyncio.to_thread(build_geo_period, unit, start)
 
 @app.get("/admin/api/analytics/overview", dependencies=[Depends(verify_admin)])
 async def analytics_overview(date_from: str = Query("", alias="from"), date_to: str = Query("", alias="to")):
