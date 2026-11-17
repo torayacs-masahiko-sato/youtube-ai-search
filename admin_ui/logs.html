@@ -112,12 +112,34 @@
     .heat th.rn,.heat td.rn{width:96px;text-align:left;font-size:12px;padding-right:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .heat td.c{height:24px;border-radius:3px;background:#f1f5f9;color:transparent;}
     .heat td.c.on{color:inherit;}
-    .heat td.tot{width:44px;font-size:12px;font-weight:700;text-align:right;}
+    .heat td.tot,.heat th.tot{width:44px;font-size:12px;font-weight:700;text-align:right;}
     .heat tr:hover td{background:none;}
     .heat-wrap{overflow-x:auto;}
-    .heat-wrap table.heat{display:table;min-width:640px;}  /* 共通CSSのスマホ用「表を横スクロール」設定より優先し、横スクロールは外枠で行う */
+    .heat-wrap table.heat{display:table;}  /* 共通CSSのスマホ用「表を横スクロール」設定より優先し、横スクロールは外枠で行う */
     .geo-foot{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.7;}
     .geo-foot a{color:var(--muted);}
+    .geo-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+    .geo-period{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+    .geo-nav{display:flex;gap:6px;align-items:center;}
+    .geo-nav button{min-width:34px;height:32px;padding:0 10px;border:1.5px solid var(--border);border-radius:8px;background:#fff;font:inherit;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;}
+    .geo-nav button:disabled{opacity:.35;cursor:default;}
+    .geo-nav button:focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+    .geo-label{font-weight:700;font-size:14px;min-width:9em;text-align:center;}
+    .geo-busy{opacity:.55;pointer-events:none;transition:opacity .15s;}
+    /* 日別グラフ: 土曜=青系、日曜・祝日=赤系の背景と文字 */
+    .gd-wrap{overflow-x:auto;}
+    .gd{display:grid;column-gap:2px;min-width:420px;}
+    .gd-c{height:120px;display:flex;align-items:flex-end;border-radius:3px 3px 0 0;}
+    .gd-c.sat{background:#e8f0fd;} .gd-c.hol{background:#fdecec;}
+    .gd-c.fut{opacity:.35;}
+    .gd-b{width:100%;background:var(--brand);border-radius:2px 2px 0 0;min-height:0;}
+    .gd-l{font-size:10px;text-align:center;color:var(--muted);padding-top:3px;line-height:1.3;}
+    .gd-l.sat,.heat th.dh.sat{color:#1d5fd1;font-weight:700;} .gd-l.hol,.heat th.dh.hol{color:#c62828;font-weight:700;}
+    .heat th.dh{line-height:1.25;height:auto;padding:2px 0;}
+    .heat td.c.sat{background:#e8f0fd;} .heat td.c.hol{background:#fdecec;} .heat td.c.fut{opacity:.4;}
+    .gd-legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;}
+    .gd-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;}
+    .gd-legend i.sat{background:#e8f0fd;border:1px solid #9bb8ec;} .gd-legend i.hol{background:#fdecec;border:1px solid #e6a1a1;}
     .print-only{display:none;}
     @media print{
       header,footer,.toolbar,.an-tool,#rankSec,#monthSec,.no-print{display:none!important;}
@@ -515,26 +537,70 @@
     html+='<div class="grid2"><div class="card"><div class="ct">期間内 FAQクリック TOP10</div>'+rk(d.faq_ranking,'faq')+'</div>'
       +'<div class="card"><div class="ct">期間内 動画クリック TOP10</div>'+rk(d.video_ranking,'video')+'</div></div>';
     document.getElementById('anBody').innerHTML=html;
-    geoData=d.geo||null; geoSel=null; geoRender();
+    geoLoad();   // 利用地域は検索分析の期間とは別に、月毎・週毎で表示する
   }
 
-  /* ---- 利用地域（国内=都道府県 / 海外=国）。時間帯は日本時間 ---- */
-  var geoData=null, geoMode='domestic', geoSel=null;
+  /* ---- 利用地域（国内=都道府県 / 海外=国）。月毎・週毎に集計。時間帯は日本時間 ---- */
+  var geoData=null, geoMode='domestic', geoSel=null, geoUnit='month', geoStart='', geoBusy=false;
   function geoSetMode(m){ geoMode=m; geoSel=null; geoRender(); }
   function geoPick(i){ geoSel=(geoSel===i?null:i); geoRender(); }
+  function geoSetUnit(u){   // 最新の期間を見ている時は切り替え後も最新（今月→今週）。過去を見ている時はその期間の初日を含む月／週
+    if(u===geoUnit) return; geoUnit=u;
+    if(geoData && !geoData.next) geoStart='';
+    geoSel=null; geoLoad();
+  }
+  function geoGo(start){ geoStart=start||''; geoSel=null; geoLoad(); }
+  function geoLoad(){
+    var el=document.getElementById('geoSec'); if(!el) return;
+    if(geoData) geoBusy=true, geoRender();
+    else el.innerHTML='<div class="card"><div class="ct">利用地域</div><div class="empty" style="padding:24px">読み込み中…</div></div>';
+    fetch('/admin/api/analytics/geo?unit='+geoUnit+'&start='+encodeURIComponent(geoStart), { headers:{ 'Authorization': makeH() } })
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+      .then(function(d){ geoData=d; geoStart=d.from; geoBusy=false; geoRender(); })
+      .catch(function(e){ geoBusy=false; el.innerHTML='<div class="card"><div class="ct">利用地域</div><div class="an-note">⚠️ 利用地域の読み込みに失敗しました（'+esc(e.message)+'）。ページを再読み込みしてください。</div></div>'; });
+  }
+  var DOW='月火水木金土日';
+  function dayKind(dl, useHol){   // 'hol'=日曜・祝日, 'sat'=土曜, ''=平日（国内のみ色分け）
+    if(!useHol) return '';
+    if(dl.holiday || dl.dow===6) return 'hol';
+    return dl.dow===5 ? 'sat' : '';
+  }
+  function dayTitle(dl){ var d=dl.date.split('-'); return (+d[1])+'/'+(+d[2])+'（'+DOW[dl.dow]+'）'+(dl.holiday?' '+dl.holiday:''); }
+  function geoDayChart(vals, dlist, title, useHol){
+    var max=Math.max.apply(null, vals.concat([1]));
+    var cols=vals.map(function(v,i){
+      var dl=dlist[i], k=dayKind(dl,useHol);
+      return '<div class="gd-c '+k+(dl.future?' fut':'')+'" title="'+esc(dayTitle(dl))+': '+(dl.future?'—':v+'件')+'"><div class="gd-b" style="height:'+(v/max*100)+'%"></div></div>';
+    }).join('');
+    var lbls=dlist.map(function(dl){
+      var k=dayKind(dl,useHol), d=+dl.date.split('-')[2];
+      return '<div class="gd-l '+k+'">'+(geoUnit==='week'?d+'<br>'+DOW[dl.dow]:d)+'</div>';
+    }).join('');
+    return '<div class="card" style="margin-bottom:16px"><div class="ct">'+title+'</div>'
+      +'<div class="gd-wrap"><div class="gd" style="grid-template-columns:repeat('+vals.length+',minmax(0,1fr))">'+cols+lbls+'</div></div>'
+      +(useHol?'<div class="gd-legend"><span><i class="sat"></i>土曜</span><span><i class="hol"></i>日曜・祝日</span></div>':'')+'</div>';
+  }
   function geoRender(){
     var el=document.getElementById('geoSec'); if(!el) return;
     var g=geoData;
     if(!g){ el.innerHTML=''; return; }
-    var st=g.status||{}, h='<div class="card"><div class="ct">利用地域 <span style="font-size:11px;color:var(--muted);font-weight:400">（どこから検索されたか。時間帯は日本時間）</span></div>';
+    var st=g.status||{}, useHol=(geoMode==='domestic'), dl=g.day_list||[];
+    var h='<div class="card'+(geoBusy?' geo-busy':'')+'"><div class="geo-head"><div class="ct" style="margin:0">利用地域 <span style="font-size:11px;color:var(--muted);font-weight:400">（どこから検索されたか。時間帯は日本時間）</span></div>'
+      +'<div class="geo-period"><div class="geo-tabs" role="group" aria-label="集計の単位" style="margin:0">'
+      +'<button type="button" aria-pressed="'+(geoUnit==='month')+'" onclick="geoSetUnit(\'month\')">月毎</button>'
+      +'<button type="button" aria-pressed="'+(geoUnit==='week')+'" onclick="geoSetUnit(\'week\')">週毎</button></div>'
+      +'<div class="geo-nav"><button type="button" aria-label="前の'+(geoUnit==='month'?'月':'週')+'" '+(g.prev?'onclick="geoGo(\''+g.prev+'\')"':'disabled')+'>◀</button>'
+      +'<span class="geo-label">'+esc(g.label)+'</span>'
+      +'<button type="button" aria-label="次の'+(geoUnit==='month'?'月':'週')+'" '+(g.next?'onclick="geoGo(\''+g.next+'\')"':'disabled')+'>▶</button>'
+      +'<button type="button" class="geo-now" onclick="geoGo(\'\')">'+(geoUnit==='month'?'今月':'今週')+'</button></div></div></div>';
     if(st.state && st.state!=='利用可能'){
       h+='<div class="an-note">ℹ️ 位置データの状態: <b>'+esc(st.state)+'</b>'+(st.error?'（'+esc(st.error)+'）':'')+'。準備ができるまでの検索は「不明」になります。</div>';
     }
     else if(st.error){
       h+='<div class="an-note">ℹ️ 位置データの更新に失敗しました（'+esc(st.error)+'）。前回のデータで判定を続けています。翌日に自動で再試行します。</div>';
     }
-    if(g.no_record && !g.recorded){
-      h+='<div class="an-note">📭 この期間の検索には地域が記録されていません。地域の記録は今回の更新以降の検索が対象です。</div></div>';
+    if(!g.recorded){
+      h+='<div class="an-note">📭 この'+(geoUnit==='month'?'月':'週')+'の検索には地域の記録がありません。'+(g.no_record?'（地域の記録は2026年11月16日の更新以降の検索が対象です）':'')+'</div></div>';
       el.innerHTML=h; return;
     }
     if(g.no_record){
@@ -546,7 +612,7 @@
       +'<button type="button" aria-pressed="'+(geoMode==='overseas')+'" onclick="geoSetMode(\'overseas\')">海外（国別）</button></div>';
     var part=g[geoMode], rows=part.rows||[];
     if(!rows.length){
-      h+='<div class="empty" style="padding:24px">'+(geoMode==='domestic'?'国内からの検索はありません':'海外からの検索はありません')+'</div>';
+      h+='<div class="empty" style="padding:24px">'+(geoMode==='domestic'?'この期間、国内からの検索はありません':'この期間、海外からの検索はありません')+'</div>';
     } else {
       var max=rows[0].count;
       var list=rows.map(function(r,i){
@@ -556,32 +622,55 @@
           +'<div class="bc">'+r.count+'件</div></div>';
       }).join('');
       var sel=geoSel!=null && rows[geoSel] ? rows[geoSel] : null;
-      var hrs=sel?sel.hours:part.hours;
-      var label=(sel?sel.name:(geoMode==='domestic'?'国内 全体':'海外 全体'))+' の時間帯別 検索回数';
+      var who=sel?sel.name:(geoMode==='domestic'?'国内 全体':'海外 全体');
+      var hrs=sel?sel.hours:part.hours, dys=sel?sel.days:part.days;
+      // 国内: 平日と土日祝の比較（未来の日は数えない）
+      if(useHol){
+        var wd=[0,0], we=[0,0];
+        dl.forEach(function(x,i){ if(x.future) return; var t=dayKind(x,true)?we:wd; t[0]++; t[1]+=dys[i]; });
+        var avg=function(t){ return t[0]? (t[1]/t[0]).toFixed(1):'—'; };
+        h+='<div class="geo-sum" style="margin-top:-4px">'+esc(who)+'：<span>平日 '+wd[0]+'日 <b>'+wd[1]+'</b>件（1日平均 '+avg(wd)+'件）</span><span>土日祝 '+we[0]+'日 <b>'+we[1]+'</b>件（1日平均 '+avg(we)+'件）</span></div>';
+      }
       h+='<div class="grid2" style="margin-bottom:16px">'
-        +'<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(geoMode==='domestic'?'都道府県':'国')+'を選ぶと、右のグラフがその地域の時間帯に切り替わります</div><div class="scroll">'+list+'</div></div>'
-        +colChart(hrs, hrs.map(function(_,i){return i+'時';}), esc(label))
+        +'<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+(geoMode==='domestic'?'都道府県':'国')+'を選ぶと、グラフがその地域に切り替わります</div><div class="scroll">'+list+'</div></div>'
+        +colChart(hrs, hrs.map(function(_,i){return i+'時';}), esc(who+' の時間帯別 検索回数'))
         +'</div>';
-      // 地域×時間帯の表（上位15件）
-      var top=rows.slice(0,15), cmax=1;
-      top.forEach(function(r){ r.hours.forEach(function(v){ if(v>cmax) cmax=v; }); });
-      var t='<div class="heat-wrap"><table class="heat"><caption style="text-align:left;font-size:13px;font-weight:700;padding-bottom:6px">'
-        +(geoMode==='domestic'?'都道府県':'国')+' × 時間帯（上位15件・色が濃いほど多い）</caption><thead><tr><th class="rn" scope="col">地域</th>';
-      for(var i=0;i<24;i++) t+='<th scope="col">'+(i%3===0?i:'')+'</th>';
-      t+='<th class="tot" scope="col">計</th></tr></thead><tbody>';
-      top.forEach(function(r){
-        t+='<tr><th class="rn" scope="row" title="'+esc(r.name)+'" style="font-weight:600;color:var(--text)">'+esc(r.name)+'</th>';
-        r.hours.forEach(function(v,i){
-          if(!v){ t+='<td class="c" title="'+esc(r.name)+' '+i+'時台: 0件"></td>'; return; }
-          var a=0.15+0.85*(v/cmax);
-          t+='<td class="c on" style="background:rgba(0,102,204,'+a.toFixed(2)+');color:'+(a>0.55?'#fff':'#0b3d75')+'" title="'+esc(r.name)+' '+i+'時台: '+v+'件">'+v+'</td>';
+      h+=geoDayChart(dys, dl, esc(who+' の日別 検索回数'), useHol);
+      // 地域×時間帯 / 地域×日 の表（上位15件）
+      var top=rows.slice(0,15);
+      function heat(title, cols, head, valsOf, cellKind, cellTitle, minW){
+        var cmax=1; top.forEach(function(r){ valsOf(r).forEach(function(v){ if(v>cmax) cmax=v; }); });
+        var t='<div class="heat-wrap" style="margin-bottom:16px"><table class="heat" style="min-width:'+minW+'px"><caption style="text-align:left;font-size:13px;font-weight:700;padding-bottom:6px">'+title+'</caption><thead><tr><th class="rn" scope="col">地域</th>';
+        for(var i=0;i<cols;i++) t+=head(i);
+        t+='<th class="tot" scope="col">計</th></tr></thead><tbody>';
+        top.forEach(function(r){
+          t+='<tr><th class="rn" scope="row" title="'+esc(r.name)+'" style="font-weight:600;color:var(--text)">'+esc(r.name)+'</th>';
+          valsOf(r).forEach(function(v,i){
+            var k=cellKind(i), tt=esc(r.name+' '+cellTitle(i)+': '+v+'件');
+            if(!v){ t+='<td class="c '+k+'" title="'+tt+'"></td>'; return; }
+            var a=0.15+0.85*(v/cmax);
+            t+='<td class="c on" style="background:rgba(0,102,204,'+a.toFixed(2)+');color:'+(a>0.55?'#fff':'#0b3d75')+'" title="'+tt+'">'+v+'</td>';
+          });
+          t+='<td class="tot">'+r.count+'</td></tr>';
         });
-        t+='<td class="tot">'+r.count+'</td></tr>';
-      });
-      h+=t+'</tbody></table></div>';
+        return t+'</tbody></table></div>';
+      }
+      var area=(geoMode==='domestic'?'都道府県':'国');
+      h+=heat(area+' × 時間帯（上位15件・色が濃いほど多い）', 24,
+        function(i){ return '<th scope="col">'+(i%3===0?i:'')+'</th>'; },
+        function(r){ return r.hours; }, function(){ return ''; }, function(i){ return i+'時台'; }, 640);
+      h+=heat(area+' × 日（上位15件）', dl.length,
+        function(i){ var x=dl[i], k=dayKind(x,useHol); return '<th scope="col" class="dh '+k+'" title="'+esc(dayTitle(x))+'">'+(+x.date.split('-')[2])+'<br>'+DOW[x.dow]+'</th>'; },
+        function(r){ return r.days; }, function(i){ return dayKind(dl[i],useHol)+(dl[i].future?' fut':''); }, function(i){ return dayTitle(dl[i]); },
+        geoUnit==='month'?900:420);
+      if(useHol){
+        var hl=dl.filter(function(x){ return x.holiday; }).map(function(x){ return esc(dayTitle(x)); });
+        h+='<div class="geo-foot" style="margin-top:0">この期間の祝日：'+(hl.length?hl.join('、'):'なし')+'</div>';
+      }
     }
     h+='<div class="geo-foot">※地域はIPアドレスから推定した目安です。スマホ回線や大手プロバイダーは東京・大阪の設備として判定されやすく、会社のVPN経由はその拠点の地域になります。IPアドレス自体は保存していません。'
       +(geoMode==='domestic'&&part.pref_unknown?'<br>※「都道府県不明」は日本からの検索で、都道府県まで判定できなかったものです。':'')
+      +(useHol?'<br>※土日祝は日本の暦（振替休日を含む）。年末年始など会社独自の休日は含みません。':'')
       +(st.db_date?'<br>位置データ: '+esc(st.db_date)+' 版':'')
       +'<br><a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a></div>';
     el.innerHTML=h+'</div>';
