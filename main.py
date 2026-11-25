@@ -25,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 from datetime import date as _date   # 別名にして、既存コードやクエリ引数の名前とぶつからないようにする
 import threading
 import asyncio
+import video_keywords   # 動画キーワードの自動生成（video_keywords.py参照）
 import geo_ip   # IPアドレス→国・都道府県（検索分析の「利用地域」用。geo_ip.py参照）
 import ja_text  # 日本語解析（形態素解析）。未インストールでも起動できる作り（ja_text.py参照）
 import io
@@ -1268,12 +1269,17 @@ def video_search_core(query: str, language: Optional[str], config: Dict[str, Any
         video_lang = video.get("language", "ja")
         if language != "all" and video_lang != language:
             continue
-        title_bonus = keyword_match_score(query, video.get("title", ""), use_ja)
+        # キーワード一致度: タイトル＋キーワード（キーワードが無い動画は従来どおりタイトルだけ）
+        kws = video.get("keywords") or []
+        kw_text = " ".join(k for k in kws if isinstance(k, str)) if isinstance(kws, list) else ""
+        title_bonus = keyword_match_score(query, (video.get("title", "") or "") + (" " + kw_text if kw_text else ""), use_ja)
+        kw_only = keyword_match_score(query, kw_text, use_ja) if kw_text else 0.0
         hybrid_score = semantic_for_ranking(semantic_score, config) * semantic_weight + title_bonus * title_weight
         video["score"] = hybrid_score
         video["semantic_score"] = semantic_score
         video["title_score"] = title_bonus
-        passed = semantic_score >= threshold          # 閾値チェック（セマンティックスコアで判定）
+        # 閾値チェック（セマンティックスコアで判定）。キーワードとよく一致した動画は、FAQと同じく閾値未満でも表示する
+        passed = semantic_score >= threshold or kw_only >= FAQ_KEYWORD_MATCH_MIN_SCORE
         if passed:
             results.append(video)
         elif include_rejected:
@@ -2079,6 +2085,9 @@ async def update_video(video_id: str, video_data: dict, background_tasks: Backgr
 async def update_videos(videos: List[dict], background_tasks: BackgroundTasks):
     """動画データ一括更新（言語タグ編集用）"""
     print(f"💾 Updating videos: {len(videos)} items")
+    for v in videos:
+        if isinstance(v, dict) and "keywords" in v:
+            v["keywords"] = video_keywords.clean_keywords(v.get("keywords"))   # 空・重複・形式の違いを整える
     
     with open(DATA_PATH, "w", encoding="utf-8") as f:
         json.dump(videos, f, ensure_ascii=False, indent=2)
@@ -2089,6 +2098,40 @@ async def update_videos(videos: List[dict], background_tasks: BackgroundTasks):
     background_tasks.add_task(reload_video_data)
     
     return {"status": "ok", "count": len(videos)}
+
+def _generate_video_keywords(items: List[dict], max_keywords: int) -> List[List[str]]:
+    """渡された動画のキーワードを作る。「他の動画にどれだけ出る語か」は、保存済みの全動画＋渡された動画で判定する。"""
+    corpus: Dict[str, dict] = {}
+    if DATA_PATH.exists():
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            for i, v in enumerate(json.load(f)):
+                if isinstance(v, dict):
+                    corpus[str(v.get("video_id") or f"#{i}")] = v
+    for i, v in enumerate(items):
+        corpus[str(v.get("video_id") or f"new#{i}")] = v      # 同じ動画は編集中の内容で数える
+    df, n = video_keywords.build_df(corpus.values())
+    return [video_keywords.generate(v, df, n, max_keywords) for v in items]
+
+@app.post("/admin/api/videos/generate-keywords", dependencies=[Depends(verify_admin)])
+async def generate_video_keywords(body: dict):
+    """動画のキーワードを自動生成して返す（保存はしない。画面で確認・修正してから保存する）。
+    body: {"items": [{"video_id", "language", "title", "description", "transcript"}, ...], "max": 10}"""
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "items（動画の配列）を指定してください")
+    if len(items) > 5000:
+        raise HTTPException(400, "一度に生成できるのは5000件までです")
+    items = [v if isinstance(v, dict) else {} for v in items]
+    max_kw = max(1, min(int(body.get("max") or video_keywords.MAX_KEYWORDS), 30))
+    t0 = time.time()
+    try:
+        result = await asyncio.to_thread(_generate_video_keywords, items, max_kw)
+    except Exception as e:
+        print(f"❌ Keyword generation failed: {e}")
+        raise HTTPException(500, f"キーワードの生成に失敗しました: {e}")
+    method = "日本語解析" if ja_text.available() else "簡易方式（日本語解析が使えないため）"
+    print(f"🏷️ Generated video keywords: {len(items)} items, {method}, {time.time() - t0:.1f}s")
+    return {"keywords": result, "method": method}
 
 @app.delete("/admin/api/videos/{video_id}", dependencies=[Depends(verify_admin)])
 async def delete_video(video_id: str, background_tasks: BackgroundTasks):
