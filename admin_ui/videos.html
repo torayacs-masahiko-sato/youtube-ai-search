@@ -157,6 +157,11 @@
       resize: vertical;
       min-height: 60px;
     }
+    .kw-row{display:flex;gap:8px;align-items:stretch;}
+    .kw-row textarea{flex:1;min-height:56px;}
+    .kw-row .btn{white-space:nowrap;}
+    .kw-hint{font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6;}
+    .kw-hint.ng{color:#b91c1c;}
     .form-actions {
       display: flex;
       gap: 12px;
@@ -254,6 +259,7 @@
         <div style="margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px;">
           <button class="btn btn-danger" id="delSelBtn" onclick="deleteSelected()" disabled>🗑 選択削除（<span id="selCount">0</span>件）</button>
           <button class="btn btn-danger" onclick="deleteAll()">🗑 一括削除</button>
+          <button class="btn" id="kwBulkBtn" onclick="generateKeywordsBulk()" title="キーワードが無い動画すべてに、キーワードを自動で作成します">🏷️ キーワード一括作成（未作成 <span id="kwMissingCount">0</span>件）</button>
           <button class="btn" onclick="exportData()">📥 エクスポート</button>
           <button class="btn btn-primary" onclick="document.getElementById('importFile').click()">📤 インポート</button>
           <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importData(event)">
@@ -313,6 +319,15 @@
       <div class="form-group">
         <label>説明文</label>
         <textarea id="editDescription" rows="3"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label for="editKeywords">キーワード <span style="font-weight:400;color:var(--text-muted);font-size:12px">（検索に使います。お客様の画面には表示されません）</span></label>
+        <div class="kw-row">
+          <textarea id="editKeywords" rows="2" placeholder="キーワード1, キーワード2"></textarea>
+          <button type="button" class="btn" id="kwGenBtn" onclick="generateKeywordsForEdit()">🏷️ 自動生成</button>
+        </div>
+        <div class="kw-hint" id="kwHint" aria-live="polite">「,」か「、」で区切って入力します。「自動生成」を押すと、タイトル・説明文・文字起こしから作成します（「保存」を押すまで反映されません）。</div>
       </div>
 
       <div class="form-group">
@@ -382,6 +397,7 @@
       document.getElementById('jaCount').textContent = ja;
       document.getElementById('enCount').textContent = en;
       document.getElementById('noLangCount').textContent = noLang;
+      document.getElementById('kwMissingCount').textContent = videos.filter(function(v) { return kwList(v).length === 0; }).length;
     }
 
     function filterVideos() {
@@ -631,6 +647,8 @@
       document.getElementById('editTitle').value = video.title || '';
       document.getElementById('editDescription').value = video.description || '';
       document.getElementById('editUrl').value = video.url || '';
+      document.getElementById('editKeywords').value = kwList(video).join(', ');
+      setKwHint('', false);
 
       document.getElementById('editModal').classList.add('active');
     }
@@ -653,6 +671,7 @@
       video.language = language;
       video.title = document.getElementById('editTitle').value;
       video.description = document.getElementById('editDescription').value;
+      video.keywords = parseKeywords(document.getElementById('editKeywords').value);
 
       try {
         var authData = JSON.parse(auth);
@@ -678,6 +697,107 @@
       } catch (error) {
         console.error('Error saving video:', error);
         alert('エラー: ' + error.message);
+      }
+    }
+
+    // ---- キーワード ----
+    var KW_HINT_DEFAULT = '「,」か「、」で区切って入力します。「自動生成」を押すと、タイトル・説明文・文字起こしから作成します（「保存」を押すまで反映されません）。';
+    function setKwHint(msg, ng) {
+      var el = document.getElementById('kwHint');
+      el.textContent = msg || KW_HINT_DEFAULT;
+      el.className = 'kw-hint' + (ng ? ' ng' : '');
+    }
+    function parseKeywords(text) {
+      var seen = {}, out = [];
+      String(text || '').split(/[,、，\n]/).forEach(function(x) {
+        var k = x.trim(); var key = k.toLowerCase();
+        if (k && !seen[key]) { seen[key] = true; out.push(k); }
+      });
+      return out;
+    }
+    // 動画のキーワード（配列でも「a, b」の文字列でも受け付ける）
+    function kwList(v) {
+      var k = v && v.keywords;
+      if (Array.isArray(k)) return parseKeywords(k.filter(function(x) { return x != null; }).join(','));
+      return parseKeywords(typeof k === 'string' ? k : '');
+    }
+    // サーバーでキーワードを作る（保存はしない）。items: 動画の配列 → キーワードの配列の配列
+    async function requestKeywords(items) {
+      var r = await fetch('/admin/api/videos/generate-keywords', {
+        method: 'POST', headers: authHeaders(true),
+        body: JSON.stringify({ items: items.map(function(v) {
+          return { video_id: v.video_id || '', language: v.language || 'ja', title: v.title || '', description: v.description || '', transcript: v.transcript || '' };
+        }) })
+      });
+      if (r.status === 401) { window.location.href = '/admin'; throw new Error('ログインの有効期限が切れました'); }
+      if (!r.ok) {
+        var detail = ''; try { detail = (await r.json()).detail || ''; } catch (e) {}
+        throw new Error(detail || ('HTTP ' + r.status));
+      }
+      return r.json();
+    }
+    async function generateKeywordsForEdit() {
+      if (currentEditIndex === -1) return;
+      var input = document.getElementById('editKeywords');
+      if (input.value.trim() && !confirm('入力済みのキーワードを、自動生成したものに置き換えますか？')) return;
+      var btn = document.getElementById('kwGenBtn');
+      btn.disabled = true; btn.textContent = '生成中…';
+      setKwHint('キーワードを作成しています。初回は全動画の文字起こしを解析するため、数十秒かかることがあります。', false);
+      try {
+        // 画面で編集中のタイトル・説明文を使う（文字起こしは保存済みの内容）
+        var v = Object.assign({}, videos[currentEditIndex], {
+          title: document.getElementById('editTitle').value,
+          description: document.getElementById('editDescription').value,
+          language: document.getElementById('editLanguage').value || videos[currentEditIndex].language
+        });
+        var res = await requestKeywords([v]);
+        var kws = (res.keywords && res.keywords[0]) || [];
+        if (!kws.length) {
+          setKwHint('キーワードを作れませんでした（タイトル・説明文・文字起こしに手がかりになる語がありません）。手入力してください。', true);
+        } else {
+          input.value = kws.join(', ');
+          setKwHint(kws.length + '個のキーワードを作成しました（' + res.method + '）。不要な語は消し、足りない語は追加してから「保存」を押してください。', false);
+        }
+      } catch (e) {
+        setKwHint('キーワードの生成に失敗しました: ' + e.message, true);
+      } finally {
+        btn.disabled = false; btn.textContent = '🏷️ 自動生成';
+      }
+    }
+
+    // キーワードが無い動画すべてに、まとめてキーワードを作る。
+    // 既にキーワードがある動画は対象外（手で直したキーワードを上書きしないため。作り直すときは各動画の編集画面から）
+    async function generateKeywordsBulk() {
+      var targets = videos.filter(function(v) { return kwList(v).length === 0; });
+      if (!targets.length) {
+        alert('すべての動画にキーワードがあります。\n作り直す場合は、各動画の「編集」→「🏷️ 自動生成」を使ってください。');
+        return;
+      }
+      if (!confirm('キーワードが無い ' + targets.length + ' 件の動画に、キーワードを自動で作成して保存します。\n'
+        + '（キーワードがある ' + (videos.length - targets.length) + ' 件は変更しません）\n\n'
+        + '作成されたキーワードは、あとで各動画の編集画面で確認・修正できます。\n実行しますか？')) return;
+      var btn = document.getElementById('kwBulkBtn');
+      var label = btn.innerHTML;
+      btn.disabled = true; btn.textContent = '🏷️ 作成中…（' + targets.length + '件）';
+      try {
+        var res = await requestKeywords(targets);
+        var made = 0, empty = 0;
+        targets.forEach(function(v, i) {
+          var k = (res.keywords || [])[i] || [];
+          if (k.length) { v.keywords = k; made++; } else { empty++; }
+        });
+        if (!made) { alert('キーワードを作成できる動画がありませんでした（タイトル・説明文・文字起こしに手がかりになる語がありません）。'); return; }
+        var r = await fetch('/admin/api/videos', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(videos) });
+        if (r.status === 401) { window.location.href = '/admin'; return; }
+        if (!r.ok) throw new Error('保存に失敗しました（HTTP ' + r.status + '）');
+        alert('キーワードを作成しました: ' + made + ' 件（' + res.method + '）'
+          + (empty ? '\n作成できなかった動画: ' + empty + ' 件（手がかりになる語が無いため。編集画面から手入力してください）' : '')
+          + '\n検索には数秒で反映されます。');
+      } catch (e) {
+        alert('キーワードの一括作成に失敗しました: ' + e.message + '\nデータは変更されていません。');
+      } finally {
+        btn.disabled = false; btn.innerHTML = label;
+        loadVideos();   // 保存結果（失敗時は元の状態）を読み直して表示をそろえる
       }
     }
 
@@ -773,13 +893,31 @@
             return;
           }
 
+          // キーワードが無い（空の）動画は、取り込み時に自動生成する。
+          // ファイルにキーワードがある・既存の動画にキーワードがある場合はそれを使う（手で直したキーワードを上書きしないため）
+          var needKw = added.concat(updated).filter(function(v) { return kwList(v).length === 0; });
+
           var msg = 'インポート内容の確認\n\n'
             + '・新規追加: ' + added.length + ' 件\n'
             + '・更新: ' + updated.length + ' 件（うち文字起こしの変更 ' + transcriptChanged + ' 件）\n'
             + '・変更なし: ' + unchanged + ' 件\n'
+            + (needKw.length ? '・キーワードの自動生成: ' + needKw.length + ' 件（キーワードが無い動画）\n' : '')
             + (skipped ? '・読み込めない行: ' + skipped + ' 件（無視します）\n' : '')
             + '\n保存しますか？（更新された動画は、ファイルの内容で上書きされます）';
           if (!confirm(msg)) { event.target.value = ''; return; }
+
+          var kwMade = 0, kwNote = '';
+          if (needKw.length) {
+            try {
+              var res = await requestKeywords(needKw);
+              needKw.forEach(function(v, i) { var k = (res.keywords || [])[i] || []; v.keywords = k; if (k.length) kwMade++; });
+            } catch (kwErr) {
+              if (!confirm('キーワードの自動生成に失敗しました（' + kwErr.message + '）。\nキーワードなしで取り込みますか？\n（あとで各動画の編集画面から作成できます）')) {
+                event.target.value = ''; return;
+              }
+              kwNote = '\n※キーワードは作成されていません。';
+            }
+          }
 
           var response = await fetch('/admin/api/videos', {
             method: 'PUT',
@@ -791,7 +929,8 @@
             throw new Error('サーバーへの保存に失敗しました（HTTP ' + response.status + '）');
           }
 
-          alert('インポートしました（追加 ' + added.length + ' 件 / 更新 ' + updated.length + ' 件）。\n検索への反映（検索用データの再計算）には数十秒〜数分かかります。');
+          alert('インポートしました（追加 ' + added.length + ' 件 / 更新 ' + updated.length + ' 件'
+            + (kwMade ? ' / キーワード自動生成 ' + kwMade + ' 件' : '') + '）。\n検索への反映（検索用データの再計算）には数十秒〜数分かかります。' + kwNote);
           loadVideos();
         } catch (error) {
           alert('インポートエラー: ' + error.message + '\nデータは変更されていません。');
